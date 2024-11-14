@@ -7,7 +7,7 @@ import time
 
 # Загрузка конфигурации
 config = ConfigParser()
-config.read('config.ini')
+config.read('/home/dan/test_backup/config.ini')  # Путь к конфигу на твоем ноутбуке
 
 # Директории и параметры из конфигурации
 LOG_DIR = config.get('Paths', 'log_dir', fallback='logs')
@@ -16,7 +16,7 @@ ARCHIVE_DIR = config.get('Paths', 'archive_dir')
 QUEUE_FILE = config.get('Paths', 'queue_file', fallback='queue.txt')
 LOG_RETENTION_DAYS = config.getint('Settings', 'log_retention_days', fallback=90)
 
-# Параметры Zabbix
+# Параметры Zabbix (не будем использовать их для теста, но оставим для полноты)
 ZABBIX_ENABLED = config.getboolean('Zabbix', 'enabled', fallback=False)
 ZABBIX_HOSTNAME = config.get('Zabbix', 'hostname', fallback='localhost')
 ZABBIX_SERVER = config.get('Zabbix', 'server', fallback='127.0.0.1')
@@ -56,7 +56,7 @@ def send_to_zabbix(key, value):
         logging.error(f"Ошибка при отправке данных в Zabbix: {e}")
 
 def check_rsync_status(repo, stanza):
-    status_file = os.path.join(repo, 'backup', stanza, 'rsync.status')
+    status_file = os.path.join(repo, 'backups', stanza, 'rsync.status')
     if not os.path.exists(status_file):
         return
     with open(status_file, 'r') as f:
@@ -75,8 +75,8 @@ def process_queue():
     with open(QUEUE_FILE, 'r') as f:
         stanzas = f.read().splitlines()
     for stanza in stanzas:
-        backup_path = os.path.join(BACKUP_DIR, stanza)
-        archive_path = os.path.join(ARCHIVE_DIR, stanza)
+        backup_path = os.path.join(BACKUP_DIR, 'backups', stanza)
+        archive_path = os.path.join(ARCHIVE_DIR, 'archives', stanza)
         if ZABBIX_ENABLED:
             send_to_zabbix(f"backup_script.write_status[{stanza}]", "WRITING")
         success = write_to_tape(stanza, backup_path, archive_path)
@@ -92,7 +92,8 @@ def process_queue():
             f.write(f"{stanza}\n")
 
 def write_to_tape(stanza, backup_dir, archive_dir):
-    tape_command = f"dsmc backup {backup_dir} {archive_dir}"
+    # Используем эхо-скрипт для имитации записи на ленту
+    tape_command = f"echo 'Эмуляция записи на ленту для {stanza} в {archive_dir}'"
     try:
         result = subprocess.run(tape_command, shell=True, check=True)
         if result.returncode == 0:
@@ -102,7 +103,7 @@ def write_to_tape(stanza, backup_dir, archive_dir):
             logging.error(f"Ошибка записи на ленту для {stanza}.")
             return False
     except subprocess.CalledProcessError as e:
-        logging.error(f"Ошибка при запуске команды dsmc: {e}")
+        logging.error(f"Ошибка при запуске команды эмуляции записи: {e}")
         return False
 
 if __name__ == "__main__":
@@ -113,7 +114,7 @@ if __name__ == "__main__":
 
     repositories = [BACKUP_DIR]
     for repo in repositories:
-        for stanza in os.listdir(os.path.join(repo, "backup")):
+        for stanza in os.listdir(os.path.join(repo, "backups")):
             check_rsync_status(repo, stanza)
 
     process_queue()

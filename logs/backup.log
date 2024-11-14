@@ -1,0 +1,12 @@
+2024-11-14 12:26:36.982 | INFO     | __main__:clear_queue:56 - Очередь очищена.
+2024-11-14 12:26:36.983 | INFO     | __main__:check_rsync_status:45 - test_stanza добавлена в очередь на запись на ленту.
+2024-11-14 12:26:36.984 | ERROR    | __main__:write_to_tape:71 - Ошибка записи на ленту для test_stanza.
+2024-11-14 12:35:23.197 | INFO     | __main__:clear_queue:56 - Очередь очищена.
+2024-11-14 12:35:23.198 | INFO     | __main__:check_rsync_status:45 - test_stanza добавлена в очередь на запись на ленту.
+2024-11-14 12:35:23.198 | ERROR    | __main__:write_to_tape:73 - Ошибка при запуске команды dsmc: name 'backup_path' is not defined
+2024-11-14 12:36:36.546 | INFO     | __main__:clear_queue:56 - Очередь очищена.
+2024-11-14 12:36:36.547 | INFO     | __main__:check_rsync_status:45 - test_stanza добавлена в очередь на запись на ленту.
+2024-11-14 12:36:36.547 | ERROR    | __main__:write_to_tape:73 - Ошибка при запуске команды dsmc: name 'backup_path' is not defined
+2024-11-14 12:37:46.696 | INFO     | __main__:clear_queue:56 - Очередь очищена.
+2024-11-14 12:37:46.696 | INFO     | __main__:check_rsync_status:45 - test_stanza добавлена в очередь на запись на ленту.
+2024-11-14 12:37:46.697 | INFO     | __main__:write_to_tape:69 - Запись на ленту для test_stanza завершена успешно.

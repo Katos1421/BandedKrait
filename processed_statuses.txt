@@ -1,0 +1,2 @@
+/home/dan/PycharmProjects/Lentochnik/test-backup/backup/stanza1/rsync.status | complete;2024-11-18 08:32:04 UTC;
+/home/dan/PycharmProjects/Lentochnik/test-backup/backup/stanza2/rsync.status | complete;2024-11-18 08:32:09 UTC;

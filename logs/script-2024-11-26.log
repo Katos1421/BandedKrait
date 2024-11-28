@@ -1,4 +1,0 @@
-2024-11-26 16:17:23,722 | ERROR | Ошибка при отправке данных в Zabbix: Command 'zabbix_sender -z 127.0.0.1 -s your_hostname -k backup_script.status -o STARTED' returned non-zero exit status 127.
-2024-11-26 16:17:23,723 | INFO | Статусный файл уже обработан: /home/dan/PycharmProjects/Lentochnik/test-backup/backup/stanza1/rsync.status | complete;2024-11-18 08:32:04 UTC;
-2024-11-26 16:17:23,723 | INFO | Статусный файл уже обработан: /home/dan/PycharmProjects/Lentochnik/test-backup/backup/stanza2/rsync.status | complete;2024-11-18 08:32:09 UTC;
-2024-11-26 16:17:23,724 | ERROR | Ошибка при отправке данных в Zabbix: Command 'zabbix_sender -z 127.0.0.1 -s your_hostname -k backup_script.status -o COMPLETED' returned non-zero exit status 127.

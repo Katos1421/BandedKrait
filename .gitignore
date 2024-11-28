@@ -16,7 +16,7 @@ logs/
 Thumbs.db
 
 # Конфигурационные файлы, содержащие пути
-config.ini
+config/config.ini
 
 # Файлы состояния
 *.status

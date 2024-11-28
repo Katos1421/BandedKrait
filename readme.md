@@ -7,7 +7,6 @@
 ## Установка
 
 1. Клонируйте репозиторий:
-
    ```bash
    git clone https://github.com/Katos1421/BandedKrait.git
    cd BrandedKrait

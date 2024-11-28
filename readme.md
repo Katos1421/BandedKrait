@@ -19,3 +19,8 @@
 4. После установки пакет будет доступен в командной строке с именем lentochka:
     ```bash
     lentochka
+   
+## Удаление
+   ```bash
+   
+   pip uninstall lentochka

@@ -25,6 +25,10 @@ def parse_arguments():
 def load_config(config_path):
     """Загрузка конфигурации из файла."""
     config = ConfigParser()
+    if not os.path.exists(config_path):
+        logging.error(f"Файл конфигурации {config_path} не найден.")
+        raise FileNotFoundError(f"Файл конфигурации {config_path} отсутствует.")
+
     config.read(config_path)
     try:
         BACKUP_DIR = config.get('Paths', 'backup_dir')
@@ -149,58 +153,19 @@ def process_queue():
     open(QUEUE_FILE, 'w').close()  # Очистить очередь
 
 
-def backup_to_tape(source_dir, target_dir):
-    """Записываем файлы из source_dir в target_dir на магнитную ленту."""
-    try:
-        # Формируем команду для бэкапа на ленту
-        command = f"dsmc backup {source_dir} -tapedevice={target_dir} -quiet"
-        logging.info(f"Запуск бэкапа {source_dir} на ленту {target_dir}...")
-        result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
-        if result.returncode == 0:
-            logging.info(f"Бэкап {source_dir} на ленту завершён успешно.")
-        else:
-            logging.error(f"Ошибка при бэкапе {source_dir} на ленту: {result.stderr}")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Ошибка при выполнении команды dsmc для {source_dir}: {e}")
-
-
 if __name__ == "__main__":
-    # Логирование времени старта скрипта
     start_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    logging.info(f"Скрипт запущен в {start_time}")
-
     config_path = os.path.join(os.path.dirname(__file__), 'config', 'config.ini')
-
     try:
-        BACKUP_DIR, ARCHIVE_DIR, TARGET_DIR, LOG_RETENTION_DAYS, ZABBIX_ENABLED, ZABBIX_HOSTNAME, ZABBIX_SERVER = load_config(
-            config_path)
+        args = parse_arguments()
+        if args.verbose:
+            setup_logging(logging.DEBUG)
+        else:
+            setup_logging()
+
+        logging.info(f"Скрипт запущен в {start_time}")
+        kill_previous_instances()
+        clear_old_files(LOG_RETENTION_DAYS)
+        send_to_zabbix(ZABBIX_ENABLED, ZABBIX_SERVER, ZABBIX_HOSTNAME, "backup_script.status", "STARTED")
     except Exception as e:
-        logging.error(f"Ошибка при загрузке конфигурации: {e}")
-        exit(1)
-
-    # Парсим аргументы командной строки (для verbose режима)
-    args = parse_arguments()
-    if args.verbose:
-        setup_logging(level=logging.DEBUG)  # Устанавливаем более подробное логирование
-    else:
-        setup_logging(level=logging.INFO)
-
-    kill_previous_instances()
-    clear_old_files(LOG_RETENTION_DAYS)
-    send_to_zabbix(ZABBIX_ENABLED, ZABBIX_SERVER, ZABBIX_HOSTNAME, "backup_script.status", "STARTED")
-
-    # Используем find для поиска всех директорий .repo в каталоге BACKUP_DIR
-    try:
-        find_command = f"find {BACKUP_DIR} -type d -name '.repo'"
-        result = subprocess.run(find_command, shell=True, capture_output=True, text=True, check=True)
-        repositories = result.stdout.strip().split("\n")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Ошибка при поиске директорий .repo с помощью find: {e}")
-        repositories = []
-
-    for repo in repositories:
-        for stanza in os.listdir(repo):
-            check_rsync_status(repo, stanza)
-
-    process_queue()
-    send_to_zabbix(ZABBIX_ENABLED, ZABBIX_SERVER, ZABBIX_HOSTNAME, "backup_script.status", "COMPLETED")
+        logging.error(f"Проблема запуска: {e}")

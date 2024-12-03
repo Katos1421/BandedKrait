@@ -11,13 +11,8 @@
 
 ## Установка
 
-1. Скопируйте архив `lentochka_offline.tar.gz` на целевую машину
-2. Распакуйте архив:
-   ```bash
-   tar -xzvf lentochka_offline.tar.gz
-   ```
-
-3. Установите Lentochka:
+1. Распакуйте архив `lentochka_offline.tar.gz`
+2. Установите Lentochka:
    ```bash
    pip install lentochka-0.1-py3-none-any.whl
    ```

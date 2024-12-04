@@ -164,32 +164,72 @@ class ProcessLocker:
         except Exception as e:
             logger.error(f"Ошибка при освобождении ресурсов: {e}")
 
-def load_config():
+def find_config():
     """
-    Загрузка и валидация конфигурации из файла.
-    
-    Returns:
-        configparser.ConfigParser: Объект конфигурации с проверенными параметрами
+    Ищет config.ini в директории скрипта.
+    Возвращает путь к конфигу или вызывает исключение.
     """
-    config = configparser.ConfigParser()
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(script_dir, 'config.ini')
     
     if not os.path.exists(config_path):
-        raise FileNotFoundError(f"Конфигурационный файл не найден: {config_path}")
+        error_msg = f"""
+        ОШИБКА: Файл конфигурации не найден!
         
-    config.read(config_path)
+        Скрипт ищет config.ini в директории:
+        {script_dir}
+        
+        Убедитесь, что файл config.ini находится в той же директории,
+        что и скрипт LentochkaDSMC.py
+        """
+        raise FileNotFoundError(error_msg)
     
-    # Установка значений по умолчанию
+    return config_path
+
+# Определяем путь к конфигу
+try:
+    CONFIG_FILE = find_config()
+except FileNotFoundError as e:
+    print(str(e))
+    sys.exit(1)
+
+def load_config():
+    """
+    Загружает и валидирует конфигурацию.
+    
+    Returns:
+        dict: Словарь с параметрами конфигурации
+    """
+    # Загружаем конфиг
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+    
+    # Устанавливаем дефолтные значения
     config.setdefault('Paths', {})
-    config.setdefault('Monitoring', {})
     config.setdefault('DSMC', {})
     config.setdefault('Logging', {})
+    config.setdefault('Monitoring', {})
     
     # Пути
+    config['Paths']['config_path'] = config.get('Paths', 'config_path', fallback=CONFIG_FILE)
     config['Paths']['log_dir'] = config.get('Paths', 'log_dir')
     config['Paths']['search_root'] = config.get('Paths', 'search_root', fallback='')
     config['Paths']['excluded_dirs'] = config.get('Paths', 'excluded_dirs', 
-        fallback='/proc,/sys,/dev,/run,/tmp,/var/cache,/var/tmp')
+                                                  fallback='/proc,/sys,/dev,/run,/tmp,/var/cache,/var/tmp')
+    
+    # Настройки DSMC
+    config['DSMC']['dsmc_path'] = config.get('DSMC', 'dsmc_path', fallback='dsmc')
+    config['DSMC']['additional_params'] = config.get('DSMC', 'additional_params', fallback='-quiet')
+    config['DSMC']['max_backup_copies'] = config.get('DSMC', 'max_backup_copies', fallback='5')
+    
+    # Настройки логирования
+    config['Logging']['level'] = config.get('Logging', 'level', fallback='INFO')
+    config['Logging']['message_format'] = config.get('Logging', 'message_format', 
+                                                     fallback='%(asctime)s - %(levelname)s - %(message)s')
+    config['Logging']['time_format'] = config.get('Logging', 'time_format', 
+                                                  fallback='%Y-%m-%d %H:%M:%S')
+    config['Logging']['log_retention_days'] = config.get('Logging', 'log_retention_days', fallback='90')
+    config['Logging']['log_cleanup_enabled'] = config.get('Logging', 'log_cleanup_enabled', fallback='true')
     
     # Мониторинг
     config['Monitoring']['enabled'] = config.get('Monitoring', 'enabled', fallback='true')
@@ -197,24 +237,6 @@ def load_config():
     config['Monitoring']['monitoring_script'] = config.get('Monitoring', 'monitoring_script', 
         fallback='/path/to/monitoring/script.sh')
     config['Monitoring']['interval'] = config.get('Monitoring', 'interval', fallback='300')
-    
-    # DSMC
-    config['DSMC']['dsmc_path'] = config.get('DSMC', 'dsmc_path', fallback='/usr/bin/dsmc')
-    config['DSMC']['additional_params'] = config.get('DSMC', 'additional_params', fallback='-quiet')
-    config['DSMC']['max_backup_copies'] = config.get('DSMC', 'max_backup_copies', fallback='5')
-    
-    # Логирование
-    config['Logging']['level'] = config.get('Logging', 'level', fallback='INFO')
-    config['Logging']['time_format'] = config.get('Logging', 'time_format', 
-        fallback='%Y-%m-%d %H:%M:%S')
-    config['Logging']['message_format'] = config.get('Logging', 'message_format', 
-        fallback='%(asctime)s - %(levelname)s - %(message)s')
-    config['Logging']['log_retention_days'] = config.get('Logging', 'log_retention_days', fallback='90')
-    config['Logging']['log_cleanup_enabled'] = config.get('Logging', 'log_cleanup_enabled', fallback='true')
-    
-    # Валидация путей
-    log_dir = os.path.expanduser(config['Paths']['log_dir'])
-    os.makedirs(log_dir, exist_ok=True)
     
     return config
 

@@ -186,11 +186,10 @@ def load_config():
     config.setdefault('Logging', {})
     
     # Пути
-    config['Paths']['home_dir'] = config.get('Paths', 'home_dir', fallback=os.path.expanduser('~'))
-    config['Paths']['log_dir'] = config.get('Paths', 'log_dir', fallback='logs/')
+    config['Paths']['log_dir'] = config.get('Paths', 'log_dir')
     config['Paths']['search_root'] = config.get('Paths', 'search_root', fallback='')
     config['Paths']['excluded_dirs'] = config.get('Paths', 'excluded_dirs', 
-        fallback='/home/dan/.cache,/home/dan/.local,/proc,/sys,/dev,/run,/tmp')
+        fallback='/proc,/sys,/dev,/run,/tmp,/var/cache,/var/tmp')
     
     # Мониторинг
     config['Monitoring']['enabled'] = config.get('Monitoring', 'enabled', fallback='true')
@@ -219,130 +218,171 @@ def load_config():
     
     return config
 
-# Загружаем конфигурацию
-config = load_config()
+def validate_and_prepare_log_dir(log_dir):
+    """
+    Проверяет и подготавливает директорию для логов.
+    
+    Args:
+        log_dir (str): Путь к директории логов
+    
+    Returns:
+        str: Абсолютный путь к директории логов
+    
+    Raises:
+        ValueError: Если log_dir не указан
+        PermissionError: Если нет прав на создание директории
+    """
+    # Проверяем, указан ли log_dir
+    if not log_dir or log_dir.strip() == '':
+        error_msg = """
+        ОШИБКА: НЕ ЗАДАНА ДИРЕКТОРИЯ ДЛЯ ЛОГОВ В КОНФИГУРАЦИОННОМ ФАЙЛЕ!
+        
+        В файле config.ini в секции [Paths] необходимо указать параметр log_dir.
+        Пример:
+        [Paths]
+        log_dir = /var/log/Lentochka
+        
+        Без указания этого пути скрипт не может работать!
+        """
+        logger.error(error_msg)
+        monitoring.send_metric("log_dir_error", 1, "ERROR")
+        raise ValueError(error_msg)
+    
+    # Расширяем путь (обрабатываем ~, переменные окружения)
+    log_dir = os.path.expanduser(log_dir.strip())
+    
+    # Проверяем существование директории
+    if not os.path.exists(log_dir):
+        try:
+            # Пытаемся создать директорию
+            os.makedirs(log_dir, exist_ok=True)
+            logger.info(f"Создана директория для логов: {log_dir}")
+        except PermissionError:
+            error_msg = f"ОШИБКА: Нет прав для создания директории логов: {log_dir}"
+            logger.error(error_msg)
+            monitoring.send_metric("log_dir_permission_error", 1, "ERROR")
+            raise PermissionError(error_msg)
+    
+    # Проверяем, что это директория
+    if not os.path.isdir(log_dir):
+        error_msg = f"ОШИБКА: Указанный путь не является директорией: {log_dir}"
+        logger.error(error_msg)
+        monitoring.send_metric("log_dir_not_dir_error", 1, "ERROR")
+        raise NotADirectoryError(error_msg)
+    
+    # Проверяем права на запись
+    if not os.access(log_dir, os.W_OK):
+        error_msg = f"ОШИБКА: Нет прав на запись в директорию логов: {log_dir}"
+        logger.error(error_msg)
+        monitoring.send_metric("log_dir_write_error", 1, "ERROR")
+        raise PermissionError(error_msg)
+    
+    return log_dir
 
-# Задаем основные пути из конфига
-HOME_DIR = os.path.expanduser(config.get('Paths', 'home_dir', fallback='~'))
-LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                      config.get('Paths', 'log_dir', fallback='logs'))
-LOCK_FILE = os.path.join(LOG_DIR, 'dsmc_backup.lock')
+def generate_dsmc_log_path(log_dir):
+    """
+    Генерирует путь к логу DSMC с таймстампом.
+    
+    Args:
+        log_dir (str): Базовая директория для логов
+    
+    Returns:
+        str: Полный путь к логу DSMC
+    """
+    # Генерируем имя лог-файла с таймстампом
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dsmc_log_filename = f"dsmc_log_{timestamp}.log"
+    dsmc_log_path = os.path.join(log_dir, dsmc_log_filename)
+    
+    return dsmc_log_path
 
-# Настраиваем директорию для логов
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Настраиваем формат логов из конфига
-log_format = config.get('Logging', 'message_format', 
-                       fallback='%(asctime)s - %(levelname)s - %(message)s')
-time_format = config.get('Logging', 'time_format', 
-                        fallback='%Y-%m-%d %H:%M:%S')
-formatter = logging.Formatter(log_format, datefmt=time_format)
-
-# Создаем файл лога с меткой времени
-timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-file_handler = logging.FileHandler(os.path.join(LOG_DIR, f'dsmc_backup_{timestamp}.log'))
-file_handler.setFormatter(formatter)
-
-# Настраиваем вывод в консоль
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
-
-# Инициализируем логгер
-logger = logging.getLogger('dsmc_logger')
-logger.setLevel(config.get('Logging', 'level', fallback='INFO'))
-logger.addHandler(file_handler)
-logger.addHandler(console_handler)
-
-# Инициализируем обработчик мониторинга
-monitoring = MonitoringHandler(config)
+def find_stanzas(search_root):
+    """
+    Рекурсивный поиск станз с максимальным охватом.
+    
+    Алгоритм:
+    1. Рекурсивно обходит указанную директорию
+    2. Ищет файлы rsync.status как маркер станзы
+    3. Работает с любой вложенностью директорий
+    4. Не привязывается к именам директорий
+    
+    Args:
+        search_root (str): Корневая директория для поиска
+    
+    Returns:
+        list: Список путей к станзам
+    """
+    stanzas = []
+    
+    # Расширяем путь, если используются переменные окружения
+    search_root = os.path.expanduser(search_root)
+    
+    # Проверяем существование директории
+    if not os.path.exists(search_root):
+        logger.error(f"Указанная директория поиска не существует: {search_root}")
+        return stanzas
+    
+    # Рекурсивный обход всех поддиректорий
+    for root, dirs, files in os.walk(search_root):
+        # Ищем rsync.status как маркер станзы
+        if 'rsync.status' in files:
+            # Проверяем содержимое rsync.status
+            status_path = os.path.join(root, 'rsync.status')
+            try:
+                with open(status_path, 'r') as f:
+                    status = f.read().strip().lower()
+                    
+                    # Пропускаем станзы с проблемными статусами
+                    if status in ['failed', 'waiting', 'error']:
+                        logger.info(f"Пропускаем станзу {root}: статус '{status}' в rsync.status")
+                        continue
+                    
+                    # Добавляем станзу
+                    stanzas.append(os.path.dirname(status_path))
+                    logger.info(f"Найдена станза: {os.path.dirname(status_path)}")
+            
+            except IOError as e:
+                logger.warning(f"Не удалось прочитать {status_path}: {e}")
+    
+    return stanzas
 
 def poisk_stanz():
-    """Поиск всех станз внутри .repo директорий с проверкой статусов."""
-    excluded_paths = [
-        '/dev/*', '/proc/*', '/sys/*', '/run/*', 
-        '/tmp/*', '/var/lib/*', '/var/cache/*', 
-        '/var/tmp/*', '/root/*'
-    ]
-    
-    exclude_args = []
-    for path in excluded_paths:
-        exclude_args.extend(['-not', '-path', path])
-    
-    find_command = [
-        'find', '/', 
-        '-type', 'd', 
-        '-name', '.repo'
-    ] + exclude_args
-    
+    """Поиск всех станз с проверкой статусов."""
     try:
-        result = subprocess.run(find_command, capture_output=True, text=True, check=True)
-        repo_dirs = [d for d in result.stdout.strip().split('\n') if d]
-        
-        stanzy = []
-        for repo_dir in repo_dirs:
-            try:
-                # Проверяем наличие lentochka-status в .repo
-                if any(os.path.exists(os.path.join(repo_dir, d, 'lentochka-status')) 
-                       for d in os.listdir(repo_dir)):
-                    logger.info(f"Пропускаем .repo {repo_dir}: найден lentochka-status")
-                    continue
-                
-                # Поддиректории для потенциальной обработки
-                subdirs = []
-                for subdir in os.listdir(repo_dir):
-                    subdir_path = os.path.join(repo_dir, subdir)
-                    
-                    # Проверяем, что это директория
-                    if not os.path.isdir(subdir_path):
-                        continue
-                    
-                    # Проверяем наличие rsync.status
-                    rsync_status_path = os.path.join(subdir_path, 'rsync.status')
-                    if not os.path.exists(rsync_status_path):
-                        logger.info(f"Пропускаем {subdir}: отсутствует rsync.status")
-                        continue
-                    
-                    # Проверяем содержимое rsync.status
-                    try:
-                        with open(rsync_status_path, 'r') as f:
-                            status = f.read().strip().lower()
-                    except IOError as e:
-                        logger.warning(f"Не удалось прочитать {rsync_status_path}: {e}")
-                        continue
-                    
-                    # Список статусов, которые мы пропускаем
-                    skip_statuses = ['failed', 'waiting', 'error']
-                    if status in skip_statuses:
-                        logger.info(f"Пропускаем {subdir}: статус '{status}' в rsync.status")
-                        continue
-                    
-                    # Если все проверки пройдены - добавляем в список
-                    subdirs.append(subdir)
-                
-                # Формируем информацию о станзах
-                for subdir in subdirs:
-                    stanzy.append({
-                        'repo_path': repo_dir,
-                        'stanza': subdir,
-                        'tip_dir': subdir
-                    })
+        # Получаем и проверяем корневую директорию поиска из конфига
+        search_root = config.get('Paths', 'search_root', fallback=None)
+        if not search_root or search_root.strip() == '':
+            error_msg = """
+            ОШИБКА: НЕ ЗАДАН ПУТЬ ДЛЯ ПОИСКА В КОНФИГУРАЦИОННОМ ФАЙЛЕ!
             
-            except PermissionError:
-                logger.warning(f"Нет доступа к директории: {repo_dir}")
-            except Exception as e:
-                logger.error(f"Ошибка при обработке .repo директории {repo_dir}: {e}")
+            В файле config.ini в секции [Paths] необходимо указать параметр search_root.
+            Пример:
+            [Paths]
+            search_root = /путь/к/директории/с/бэкапами
+            
+            Без указания этого пути скрипт не может работать!
+            """
+            logger.error(error_msg)
+            monitoring.send_metric("config_error", 1, "ERROR")
+            raise ValueError(error_msg)
+        
+        # Находим станзы
+        stanzy = [
+            {
+                'repo_path': os.path.dirname(os.path.dirname(stanza)),
+                'stanza': os.path.basename(stanza),
+                'tip_dir': os.path.basename(stanza)
+            }
+            for stanza in find_stanzas(search_root)
+        ]
         
         logger.info(f"Найдено станз для обработки: {len(stanzy)}")
-        
-        # Отправляем метрики
-        monitoring.send_metric("total_repos_found", len(repo_dirs))
         monitoring.send_metric("stanzas_for_processing", len(stanzy))
         
         return stanzy
     
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Ошибка поиска .repo директорий: {e}")
-        monitoring.send_metric("repo_search_error", 1, "ERROR")
+    except (ValueError, FileNotFoundError, NotADirectoryError) as e:
+        # Эти ошибки уже обработаны выше
         return []
     except Exception as e:
         logger.error(f"Неожиданная ошибка при поиске станз: {e}")
@@ -352,31 +392,44 @@ def poisk_stanz():
 def zapis_na_lentu(repo_path, stanza, tip_dir):
     """Запись станзы из backup или archive директории на ленту."""
     try:
-        # Формируем путь источника
-        source_dir = os.path.join(repo_path, tip_dir, stanza)
+        # Получаем и валидируем log_dir
+        log_dir = config.get('Paths', 'log_dir')
+        log_dir = validate_and_prepare_log_dir(log_dir)
         
-        # Получаем путь к DSMC и дополнительные параметры из конфига
+        # Генерируем путь к логу DSMC
+        dsmc_log = generate_dsmc_log_path(log_dir)
+        
+        # Получаем пути к директориям backup и archive
+        backup_dir = os.path.join(repo_path, 'backup', stanza)
+        archive_dir = os.path.join(repo_path, 'archive', stanza)
+        
+        # Получаем путь к DSMC
         dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
-        additional_params = config.get('DSMC', 'additional_params', fallback='').split()
         
-        # Формируем команду для dsmc
-        dsmc_command = [dsmc_path, 'archive'] + additional_params + [source_dir]
+        # Формируем команду для выполнения в shell
+        dsmc_cmd = f"{dsmc_path} incr {backup_dir} {archive_dir} -su=yes >> {dsmc_log} 2>&1"
         
-        # Запускаем dsmc
-        logger.info(f"Начинаем запись на ленту: {' '.join(dsmc_command)}")
-        result = subprocess.run(dsmc_command, capture_output=True, text=True)
+        logger.info(f"Выполняем команду: {dsmc_cmd}")
+        logger.info(f"Лог DSMC будет сохранен в: {dsmc_log}")
+        
+        # Выполняем команду через shell с перенаправлением потоков
+        result = subprocess.run(dsmc_cmd, shell=True, capture_output=True, text=True)
         
         if result.returncode == 0:
-            logger.info(f"Запись на ленту успешно завершена: {source_dir}")
+            logger.info(f"Запись на ленту успешно завершена: {backup_dir} и {archive_dir}")
+            logger.info(f"Лог DSMC сохранен в: {dsmc_log}")
             monitoring.send_metric(f"tape_write_success_{tip_dir}", 1)
             return True
         else:
-            logger.error(f"Ошибка записи на ленту: {result.stderr}")
+            logger.error(f"Ошибка записи на ленту. Код возврата: {result.returncode}")
+            logger.error(f"Stdout: {result.stdout}")
+            logger.error(f"Stderr: {result.stderr}")
+            logger.error(f"Полный лог DSMC находится в: {dsmc_log}")
             monitoring.send_metric(f"tape_write_error_{tip_dir}", 1, "ERROR")
             return False
             
-    except Exception as e:
-        logger.error(f"Ошибка при записи {tip_dir} на ленту: {e}")
+    except (ValueError, PermissionError, NotADirectoryError) as e:
+        logger.error(f"Ошибка при работе с директорией логов: {e}")
         monitoring.send_metric(f"tape_write_error_{tip_dir}", 1, "ERROR")
         return False
 
@@ -442,4 +495,40 @@ def main():
             raise
 
 if __name__ == "__main__":
+    # Загружаем конфигурацию
+    config = load_config()
+
+    # Задаем основные пути из конфига
+    LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                          config.get('Paths', 'log_dir'))
+    LOCK_FILE = os.path.join(LOG_DIR, 'dsmc_backup.lock')
+
+    # Настраиваем директорию для логов
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    # Настраиваем формат логов из конфига
+    log_format = config.get('Logging', 'message_format', 
+                           fallback='%(asctime)s - %(levelname)s - %(message)s')
+    time_format = config.get('Logging', 'time_format', 
+                            fallback='%Y-%m-%d %H:%M:%S')
+    formatter = logging.Formatter(log_format, datefmt=time_format)
+
+    # Создаем файл лога с меткой времени
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    file_handler = logging.FileHandler(os.path.join(LOG_DIR, f'dsmc_backup_{timestamp}.log'))
+    file_handler.setFormatter(formatter)
+
+    # Настраиваем вывод в консоль
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    # Инициализируем логгер
+    logger = logging.getLogger('dsmc_logger')
+    logger.setLevel(config.get('Logging', 'level', fallback='INFO'))
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    # Инициализируем обработчик мониторинга
+    monitoring = MonitoringHandler(config)
+
     main()

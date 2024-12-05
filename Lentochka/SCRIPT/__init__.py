@@ -1,1 +1,0 @@
-from .LentochkaDSMC import main

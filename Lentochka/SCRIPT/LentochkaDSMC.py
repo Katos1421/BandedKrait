@@ -225,9 +225,11 @@ def load_config():
     # Настройки логирования
     config['Logging']['level'] = config.get('Logging', 'level', fallback='INFO')
     config['Logging']['message_format'] = config.get('Logging', 'message_format', 
-                                                     fallback='%(asctime)s - %(levelname)s - %(message)s')
+                                                     fallback='%(asctime)s - %(levelname)s - %(message)s',
+                                                     raw=True)
     config['Logging']['time_format'] = config.get('Logging', 'time_format', 
-                                                  fallback='%Y-%m-%d %H:%M:%S')
+                                                  fallback='%Y-%m-%d %H:%M:%S',
+                                                  raw=True)
     config['Logging']['log_retention_days'] = config.get('Logging', 'log_retention_days', fallback='90')
     config['Logging']['log_cleanup_enabled'] = config.get('Logging', 'log_cleanup_enabled', fallback='true')
     
@@ -488,28 +490,17 @@ def main():
 
             logger.info("Запись на ленту завершена")
             
-            try:
-                # Основная логика обработки и записи на ленту
-                uspeshnye_zapisi, oshibki_zapisi = 0, 0
-                
-                # Логика обработки и записи...
-                
-                if oshibki_zapisi > 0:
-                    monitoring.send_metric("successful_writes", uspeshnye_zapisi)
-                    monitoring.send_metric("failed_writes", oshibki_zapisi)
-                    monitoring.send_metric("backup_status", 1, "ERROR")
-                else:
-                    monitoring.send_metric("successful_writes", uspeshnye_zapisi)
-                    monitoring.send_metric("failed_writes", oshibki_zapisi)
-                    monitoring.send_metric("backup_status", 0, "OK")
-                
-                # Вызываем очистку логов
-                monitoring.cleanup_logs()
-
-            except Exception as e:
-                logger.error(f"Ошибка процесса записи на ленту: {e}")
+            # Отправляем метрики в мониторинг
+            monitoring.send_metric("successful_writes", uspeshnye_zapisi)
+            monitoring.send_metric("failed_writes", oshibki_zapisi)
+            
+            if oshibki_zapisi > 0:
                 monitoring.send_metric("backup_status", 1, "ERROR")
-                raise
+            else:
+                monitoring.send_metric("backup_status", 0, "OK")
+            
+            # Вызываем очистку логов
+            monitoring.cleanup_logs()
 
         except Exception as e:
             logger.error(f"Ошибка процесса записи на ленту: {e}")
@@ -521,18 +512,16 @@ if __name__ == "__main__":
     config = load_config()
 
     # Задаем основные пути из конфига
-    LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                          config.get('Paths', 'log_dir'))
-    LOCK_FILE = os.path.join(LOG_DIR, 'dsmc_backup.lock')
-
-    # Настраиваем директорию для логов
-    os.makedirs(LOG_DIR, exist_ok=True)
+    LOG_DIR = validate_and_prepare_log_dir(config.get('Paths', 'log_dir'))
+    LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsmc_backup.lock')
 
     # Настраиваем формат логов из конфига
     log_format = config.get('Logging', 'message_format', 
-                           fallback='%(asctime)s - %(levelname)s - %(message)s')
+                           fallback='%(asctime)s - %(levelname)s - %(message)s',
+                           raw=True)
     time_format = config.get('Logging', 'time_format', 
-                            fallback='%Y-%m-%d %H:%M:%S')
+                            fallback='%Y-%m-%d %H:%M:%S',
+                            raw=True)
     formatter = logging.Formatter(log_format, datefmt=time_format)
 
     # Создаем файл лога с меткой времени

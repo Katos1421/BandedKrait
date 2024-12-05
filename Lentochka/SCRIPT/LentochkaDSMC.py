@@ -36,7 +36,7 @@ class MonitoringHandler:
         except subprocess.CalledProcessError as e:
             logger.error(f"Ошибка отправки метрики в мониторинг: {e}")
     
-    def cleanup_logs(self):
+    def cleanup_logs(self, log_dir, log_retention_days):
         """
         Очистка старых логов.
         
@@ -47,8 +47,6 @@ class MonitoringHandler:
             return
         
         try:
-            log_dir = os.path.expanduser(self.log_dir)
-            
             # Создаем директорию, если она не существует
             os.makedirs(log_dir, exist_ok=True)
             
@@ -73,7 +71,7 @@ class MonitoringHandler:
                 file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
                 
                 # Проверяем, старше ли файл указанного срока
-                if (now - file_mtime).days > self.log_retention_days:
+                if (now - file_mtime).days > log_retention_days:
                     try:
                         os.remove(file_path)
                         deleted_files += 1
@@ -500,20 +498,59 @@ def main():
                 monitoring.send_metric("backup_status", 0, "OK")
             
             # Вызываем очистку логов
-            monitoring.cleanup_logs()
+            monitoring.cleanup_logs(LOG_DIR, config.getint('Logging', 'log_retention_days', fallback=90))
 
         except Exception as e:
             logger.error(f"Ошибка процесса записи на ленту: {e}")
             monitoring.send_metric("backup_status", 1, "ERROR")
             raise
 
+def cleanup_logs(config):
+    """
+    Очищает старые логи в соответствии с параметрами конфигурации.
+    """
+    log_dir = config.get('Paths', 'log_dir')
+    log_retention_days = config.getint('Logging', 'log_retention_days', fallback=90)
+    log_cleanup_enabled = config.getboolean('Logging', 'log_cleanup_enabled', fallback=True)
+
+    if log_cleanup_enabled:
+        logger.info("Запускаем очистку логов...")
+        monitoring.cleanup_logs(log_dir, log_retention_days)
+    else:
+        logger.info("Очистка логов отключена.")
+
 if __name__ == "__main__":
     # Загружаем конфигурацию
     config = load_config()
+    
+    # Получаем адрес Zabbix-сервера
+    zabbix_server = config.get('Monitoring', 'zabbix_server', fallback='127.0.0.1')
+    monitoring = MonitoringHandler(config)
 
-    # Задаем основные пути из конфига
-    LOG_DIR = validate_and_prepare_log_dir(config.get('Paths', 'log_dir'))
-    LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dsmc_backup.lock')
+    # Выполняем очистку логов
+    cleanup_logs(config)
+
+    # Получаем путь к директории логов
+    log_dir = config.get('Paths', 'log_dir')
+    if not log_dir or log_dir.strip() == '':
+        error_msg = """
+        ОШИБКА: НЕ ЗАДАНА ДИРЕКТОРИЯ ДЛЯ ЛОГОВ!
+        
+        В файле config.ini в секции [Paths] необходимо указать параметр log_dir.
+        Пример:
+        [Paths]
+        log_dir = /var/log/Lentochka
+        
+        Без указания этого пути скрипт не может работать!
+        """
+        print(error_msg, file=sys.stderr)
+        sys.exit(1)
+    
+    # Валидируем и создаем директорию логов
+    LOG_DIR = validate_and_prepare_log_dir(log_dir)
+    
+    # Лок-файл в директории логов
+    LOCK_FILE = os.path.join(LOG_DIR, 'dsmc_backup.lock')
 
     # Настраиваем формат логов из конфига
     log_format = config.get('Logging', 'message_format', 
@@ -538,8 +575,5 @@ if __name__ == "__main__":
     logger.setLevel(config.get('Logging', 'level', fallback='INFO'))
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
-
-    # Инициализируем обработчик мониторинга
-    monitoring = MonitoringHandler(config)
 
     main()

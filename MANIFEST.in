@@ -1,6 +1,0 @@
-include config/config.ini
-include config/processed_statuses.txt
-include config/queue.txt
-include config/zabbix_status.txt
-include readme.md
-include logs/

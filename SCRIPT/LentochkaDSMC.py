@@ -4,7 +4,6 @@
 # Подключаем необходимые библиотеки
 import os
 import sys
-import fcntl
 import signal
 import logging
 import subprocess
@@ -14,6 +13,7 @@ import shutil
 import psutil
 import datetime
 from pathlib import Path
+import fcntl
 
 # Глобальная инициализация логгера
 logger = logging.getLogger()
@@ -493,7 +493,9 @@ def main():
     logger.info(f"Найдено rsync.status файлов: {len(stanzas)}, успешно скопировано: {successful_copies}, пропущено: {skipped_copies}.")
 
 if __name__ == '__main__':
-    try:
-        main()
-    except Exception as e:
-        print(f'Ошибка: {e}')
+    config = initialize_config()
+    monitoring = MonitoringHandler(config)
+    stanzas = find_stanzas(config)
+
+    for stanza in stanzas:
+        process_stanza(stanza, config, monitoring)

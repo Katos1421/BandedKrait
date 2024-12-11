@@ -15,6 +15,24 @@ import datetime
 from pathlib import Path
 import fcntl
 
+# Получаем путь к логам и уровень логирования из конфигурации
+config = configparser.ConfigParser()
+config.read('config/config.ini')
+log_dir = os.path.join(os.path.dirname(__file__), 'logs')  # Директория для логов
+
+# Создаем директорию для логов, если она не существует
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+log_level = config.get('Logging', 'level', fallback='INFO').upper()
+
+# Настройка логирования
+logging.basicConfig(
+    filename=os.path.join(log_dir, 'lentochka.log'),  # Путь к файлу логов
+    level=log_level,               # Уровень логирования
+    format='%(asctime)s - %(levelname)s - %(message)s'  # Формат сообщений
+)
+
 # Глобальная инициализация логгера
 logger = logging.getLogger()
 
@@ -265,7 +283,8 @@ def process_stanza(stanza_info, config, monitoring):
     status_dir = os.path.dirname(stanza_info['status_path'])
     lentochka_status_path = os.path.join(status_dir, 'lentochka-status')
     if os.path.exists(lentochka_status_path):
-        logger.info(f"Станза уже обработана, пропускаем.")
+        logger.info(f"Найден файл lentochka-status по следующему пути: {lentochka_status_path}")
+        logger.info(f"Пропускаю...")
         return True
 
     # Генерируем пути для логов dsmc
@@ -476,10 +495,16 @@ def main():
 
         # Логирование наличия rsync.status файла
         if os.path.exists(rsync_status_path):
+            logger.info(f"Найден rsync.status файл по следующему пути: {rsync_status_path}")
+            
             # Логика обработки
-            if os.path.exists(os.path.join(stanza['repo_path'], 'lentochka-status')):
-                logger.info(f"Станза уже обработана, пропускаем.")
-            else:
+            with open(rsync_status_path, 'r') as f:
+                status_content = f.read().strip()
+                if 'completed' in status_content:
+                    logger.info(f"Статус rsync файла: completed")
+                    # Обработка для завершенного статуса
+                else:
+                    logger.info(f"Статус rsync файла: not completed")
                 logger.info(f"Обработка станзы: {stanza['repo_path']}...")
                 # Ваша логика обработки, например, копирование файлов
                 if process_stanza(stanza, config, monitoring):

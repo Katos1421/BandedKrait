@@ -35,6 +35,7 @@ logging.basicConfig(
 
 # Глобальная инициализация логгера
 logger = logging.getLogger()
+dsmc_logger = None
 
 class MonitoringHandler:
     """Класс для работы с системой мониторинга."""
@@ -67,6 +68,9 @@ class MonitoringHandler:
         """
         if not self.log_cleanup_enabled:
             logging.info("Автоматическая очистка логов отключена.")
+            return 0
+        if not os.path.isdir(log_dir):
+            logger.warning(f"Директория для логов не существует: {log_dir}")
             return 0
         deleted_files_count = 0
         for log_file in os.listdir(log_dir):
@@ -126,7 +130,10 @@ class ProcessLocker:
     
     def __enter__(self):
         self.terminate_existing_process()
-        self.pid_file = open(self.lock_file_path, 'w')
+        lock_file = self.lock_file_path
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+        self.pid_file = open(lock_file, 'w')
         self.pid_file.write(str(os.getpid()))
         self.pid_file.flush()
         return self
@@ -235,41 +242,36 @@ def find_stanzas(config):
     """
     stanzas = []
     search_root = config.get('Paths', 'search_root')
-    
+
     for root, dirs, files in os.walk(search_root):
         for file in files:
             if file == 'rsync.status':
                 status_path = os.path.join(root, file)
+
                 try:
                     with open(status_path, 'r') as f:
-                        status_content = f.read().strip()
-                        if 'completed' in status_content.lower():
+                        status_content = f.read().strip().lower()
+
+                        if 'complete' in status_content:
                             status = 'completed'
-                            successful_copies += 1  # Увеличиваем счетчик успешно скопированных станз
-                        elif 'failed' in status_content.lower():
+                        elif 'failed' in status_content:
                             status = 'failed'
                         else:
                             status = 'not completed'
-                        
-                        # Проверка на существование файла lentochka-status
-                        if os.path.exists('lentochka-status'):
-                            logger.info(f"Станза уже обработана, пропускаем.")
-                            skipped_copies += 1  # Увеличиваем счетчик пропущенных станз
-                            continue
-                        
-                        # Логирование статуса
-                        logger.info(f"Найден rsync.status файл по следующему пути:")
+
+                        logger.info(f"Найден rsync.status файл по следующему пути: {status_path}")
                         logger.info(f"Статус rsync файла: {status}")
                 except IOError as e:
                     logger.error(f"Ошибка при чтении файла {status_path}: {e}")
                     continue
-                
+
+                # Добавляем станзу в список
                 stanzas.append({
                     'status_path': status_path,
                     'repo_path': root,
                     'status': status
                 })
-    logger.info(f"Найдено {len(stanzas)} станз для обработки.")
+
     return stanzas
 
 def process_stanza(stanza_info, config, monitoring):
@@ -283,102 +285,48 @@ def process_stanza(stanza_info, config, monitoring):
     status_dir = os.path.dirname(stanza_info['status_path'])
     lentochka_status_path = os.path.join(status_dir, 'lentochka-status')
     if os.path.exists(lentochka_status_path):
-        logger.info(f"Найден файл lentochka-status по следующему пути: {lentochka_status_path}")
-        logger.info(f"Пропускаю...")
+        logger.info(f"Станза уже обработана, пропускаем.")
         return True
 
-    # Генерируем пути для логов dsmc
-    log_dir = Path(config.get('Paths', 'log_dir'))
-    dsmc_log = generate_dsmc_log_path(log_dir)
-    dsmc_error_log = f"{dsmc_log}.error"
-    
-    # Настройка логгера для DSMC команд
-    log_level = getattr(logging, config.get('Logging', 'level', fallback='INFO').upper(), logging.INFO)
-    log_format = config.get('Logging', 'message_format', fallback='%%(asctime)s - %%(levelname)s - %%(message)s')
-    time_format = config.get('Logging', 'time_format', fallback='%Y-%m-%d %H:%M:%S')
-    dsmc_logger = logging.getLogger('dsmc')
-    dsmc_logger.setLevel(log_level)
-    dsmc_log_file_path = os.path.join(config.get('Paths', 'log_dir'), 'dsmc.log')
-    dsmc_file_handler = logging.FileHandler(dsmc_log_file_path, mode='a')
-    dsmc_file_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
-    dsmc_logger.addHandler(dsmc_file_handler)
+        # Проверяем содержимое rsync.status
+        with open(stanza_info['status_path'], 'r') as f:
+            rsync_status = f.read().strip().lower()
+        if not rsync_status.startswith("complete"):
+            logger.warning(f"Пропущена станза ({stanza_info['repo_path']}): статус rsync не начинается с 'complete' (найдено: '{rsync_status}').")
+            return False
 
-    # Формируем и выполняем команду dsmc
-    dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
-    
-    # Проверяем наличие dsmc
-    if not shutil.which(dsmc_path):
-        dsmc_logger.error(f"Команда DSMC не найдена: {dsmc_path}")
-        return False
-    
-    # Записываем backup и archive директории
-    paths_to_backup = [
-        stanza_info['backup_path'],
-        stanza_info['archive_path']
-    ]
-    
-    try:
-        for path in paths_to_backup:
-            if not os.path.exists(path):
-                logger.error(f"Путь не существует: {path}")
-                continue
-                
-            command = f'{dsmc_path} incr "{path}" -su=yes 1>> "{dsmc_log}" 2>> "{dsmc_error_log}"'
-            logger.info(f"Выполняем запись на ленту: {path}")
-            
+        # Обрабатываем только саму директорию .repo
+        repo_path = stanza_info['repo_path']
+        if not os.path.exists(repo_path):
+            logger.error(f"Пропущена станза ({repo_path}): директория не существует.")
+            return False
+
+        dsmc_logger.info(f"Начато резервное копирование содержимого директории: {repo_path}")
+        command = f'{dsmc_path} incr "{repo_path}" -su=yes'  # Копируем всю директорию и её подкаталоги
+        try:
             result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if result.returncode != 0:
-                logger.error(f"Команда завершилась с ошибкой: {result.stderr.decode()}")
-            logger.info(f"Команда выполнена успешно: {result.stdout.decode()}")
-        
+            dsmc_logger.info(f"Команда dsmc выполнена успешно: {result.stdout.decode()}")
+        except subprocess.CalledProcessError as e:
+            dsmc_logger.error(f"Ошибка при выполнении команды dsmc: {e.stderr.decode()}")
+            dsmc_logger.error(f"Команда, которая не удалась: {command}")
+            return False
+
+        # Создаем lentochka-status
         end_time = datetime.datetime.now()
-        
-        # Создаем lentochka-status в той же директории, где найден rsync.status
         status_content = f"Backup written to tape\nStart: {start_time.isoformat()}\nEnd: {end_time.isoformat()}"
-        
-        with open(os.path.join(status_dir, 'lentochka-status'), 'w') as f:
+        with open(lentochka_status_path, 'w') as f:
             f.write(status_content)
-        
-        # Отправляем метрики в мониторинг
-        if not metric_sent:
-            try:
-                if monitoring:
-                    metric_name = sanitize_metric_name(f"backup_status_{stanza_info['repo_path']}")
-                    monitoring.send_metric(metric_name, 0, "OK")
-                    metric_sent = True
-            except Exception as e:
-                logger.error(f"Ошибка при отправке метрик: {e}")
-                if monitoring:
-                    monitoring.send_metric("error", 1, "ERROR")
-        
-        logger.info(f"Успешно записана станза: {stanza_info['repo_path']}")
+
+        dsmc_logger.info(f"Завершена обработка станзы {stanza_info['repo_path']} - статус: {stanza_info['status']}, файл lentochka-status создан.")
         return True
-        
-    except subprocess.CalledProcessError as e:
-        end_time = datetime.datetime.now()
-        logger.error(f"Ошибка при записи станзы {stanza_info['repo_path']}: {e}")
-        if hasattr(e, 'stderr'):
-            logger.error(f"Детали ошибки: {e.stderr.decode()}")
-        else:
-            logger.error(f"Детали ошибки: {e}")
-        
-        # Отправляем метрики об ошибке
-        if not metric_sent:
-            try:
-                if monitoring:
-                    metric_name = sanitize_metric_name(f"backup_status_{stanza_info['repo_path']}")
-                    monitoring.send_metric(metric_name, 1, "ERROR")
-                    metric_sent = True
-            except Exception as e:
-                logger.error(f"Ошибка при отправке метрик: {e}")
-                if monitoring:
-                    monitoring.send_metric("error", 1, "ERROR")
-        
+
+    except Exception as e:
+        logger.error(f"Необработанная ошибка в процессе обработки станзы: {e}")
         return False
 
 def generate_dsmc_log_path(log_dir):
     """
-    Генерирует путь к логу DSMC с таймстампом.
+    Генерирует путь к логу DSMC с таймштампом.
     """
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     log_file_name = f'lentochka_{timestamp}.log'
@@ -428,7 +376,7 @@ def main():
     """
     Основная функция скрипта.
     """
-    global monitoring
+    global monitoring, dsmc_logger
     config = initialize_config()  # Инициализация конфигурации
     monitoring = MonitoringHandler(config)
 
@@ -436,6 +384,18 @@ def main():
     if not os.path.exists(monitoring.script):
         logger.error(f"Скрипт мониторинга не найден по пути: {monitoring.script}")
         sys.exit(1)
+
+    # Инициализация логгера DSMC
+    dsmc_log_file_path = os.path.join(
+        config.get('Paths', 'log_dir'),
+        f'dsmc-log-{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    )
+    dsmc_logger = logging.getLogger('dsmc')
+    dsmc_logger.setLevel(logging.INFO)
+    dsmc_file_handler = logging.FileHandler(dsmc_log_file_path, mode='a')
+    dsmc_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    dsmc_logger.addHandler(dsmc_file_handler)
+    dsmc_logger.info(f"Инициализация логгера DSMC. Логи будут записаны в файл: {dsmc_log_file_path}")
 
     # Настройка логгера
     log_level = getattr(logging, config.get('Logging', 'level', fallback='INFO').upper(), logging.INFO)
@@ -458,55 +418,33 @@ def main():
     console_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
     logger.addHandler(console_handler)
 
-    # Настройка логирования DSMC
-    dsmc_logger = logging.getLogger('dsmc')
-    dsmc_logger.setLevel(log_level)
-    dsmc_handler = logging.FileHandler(os.path.join(config.get('Paths', 'log_dir'), 'dsmc.log'))
-    dsmc_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
-    dsmc_logger.addHandler(dsmc_handler)
-
     # Логика обработки станз
-    # ... (остальная логика)
-
-    # Динамическое формирование имени файла ошибок
-    error_log_path = os.path.join(config.get('Paths', 'log_dir'), f'lentochka_{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log.error')
-
-    # Проверка существования lentochka-status
-    if os.path.exists("lentochka-status"):
-        # Логика обработки статуса
-        pass
-
     stanzas = find_stanzas(config)
+    
     successful_copies = 0
     failed_copies = 0
     skipped_copies = 0
-    try:
-        if monitoring:
-            metric_name = sanitize_metric_name(f"find_stanzas_status")
-            monitoring.send_metric(metric_name, len(stanzas), "OK")
-    except Exception as e:
-        logger.error(f"Ошибка при отправке метрик: {e}")
-        if monitoring:
-            monitoring.send_metric("error", 1, "ERROR")
 
-    logger.info(f"Найдено {len(stanzas)} станз для обработки.")
+    for stanza in stanzas:
+        if stanza['status'] == 'failed':
+            failed_copies += 1
+        elif stanza['status'] != 'not completed':
+            successful_copies += 1
+        else:
+            skipped_copies += 1
+
+    logger.info(f"Итоги: Найдено rsync.status файлов: {len(stanzas)}, успешно скопировано: {successful_copies}, пропущено: {skipped_copies}, ошибок: {failed_copies}")
+
     for stanza in stanzas:
         rsync_status_path = os.path.join(stanza['repo_path'], 'rsync.status')
 
         # Логирование наличия rsync.status файла
         if os.path.exists(rsync_status_path):
-            logger.info(f"Найден rsync.status файл по следующему пути: {rsync_status_path}")
-            
             # Логика обработки
-            with open(rsync_status_path, 'r') as f:
-                status_content = f.read().strip()
-                if 'completed' in status_content:
-                    logger.info(f"Статус rsync файла: completed")
-                    # Обработка для завершенного статуса
-                else:
-                    logger.info(f"Статус rsync файла: not completed")
+            if os.path.exists(os.path.join(stanza['repo_path'], 'lentochka-status')):
+                logger.info(f"Станза уже обработана, пропускаем.")
+            else:
                 logger.info(f"Обработка станзы: {stanza['repo_path']}...")
-                # Ваша логика обработки, например, копирование файлов
                 if process_stanza(stanza, config, monitoring):
                     successful_copies += 1
                 else:
@@ -514,8 +452,10 @@ def main():
         else:
             logger.info(f"Не найден rsync.status файл по пути: {rsync_status_path}")
 
-    # Логирование итогов
-    logger.info(f"Найдено rsync.status файлов: {len(stanzas)}, успешно скопировано: {successful_copies}, пропущено: {skipped_copies}.")
+    # Завершение работы логгера DSMC
+    for handler in dsmc_logger.handlers[:]:
+        handler.close()
+        dsmc_logger.removeHandler(handler)
 
 if __name__ == '__main__':
     config = initialize_config()

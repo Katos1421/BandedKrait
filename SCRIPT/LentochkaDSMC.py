@@ -31,6 +31,10 @@ class MonitoringHandler:
         self.log_retention_days = config.getint('Logging', 'log_retention_days', fallback=90)
         self.log_cleanup_enabled = config.getboolean('Logging', 'log_cleanup_enabled', fallback=True)
         
+        # Добавляем логирование директории поиска
+        search_root = config.get('Paths', 'search_root')
+        logger.info(f"Search directory specified in .ini file: {search_root}")
+        
     def send_metric(self, metric_name, value, status='OK'):
         """Отправка метрики в систему мониторинга."""
         if not self.enabled or not self.script:
@@ -186,6 +190,7 @@ def initialize_config():
     config['DSMC']['dsmc_path'] = config.get('DSMC', 'dsmc_path', fallback='dsmc')
     config['DSMC']['additional_params'] = config.get('DSMC', 'additional_params', fallback='-quiet')
     config['DSMC']['max_backup_copies'] = config.get('DSMC', 'max_backup_copies', fallback='5')
+    config['DSMC']['dsmc_log_dir'] = config.get('DSMC', 'dsmc_log_dir', fallback=None)
     
     # Настройки логирования
     config['Logging']['level'] = config.get('Logging', 'level', fallback='INFO')
@@ -258,6 +263,18 @@ def find_stanzas(config):
 
 def process_stanza(stanza_info, config, monitoring):
     dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
+    dsmc_log_dir = config.get('DSMC', 'dsmc_log_dir', fallback=None)
+
+    # Проверка, если путь к логам DSMC не задан
+    if not dsmc_log_dir:
+        logger.error("DSMC log directory not specified in the config file.")
+        raise ValueError("DSMC log directory not specified in the config file.")
+    
+    # Проверка, если директория для логов не существует, создаем ее
+    if not os.path.exists(dsmc_log_dir):
+        logger.error(f"DSMC log directory does not exist: {dsmc_log_dir}")
+        raise ValueError(f"DSMC log directory does not exist: {dsmc_log_dir}")
+    
     try:
         # Установка времени начала
         start_time = datetime.datetime.now()
@@ -282,15 +299,38 @@ def process_stanza(stanza_info, config, monitoring):
             logger.error(f"Skipping stanza ({repo_path}): directory does not exist.")
             return False
 
-        dsmc_logger.info(f"Backing up contents of directory: {repo_path}")
-        command = f'{dsmc_path} incr "{repo_path}" -su=yes'  # Копируем всю директорию и её подкаталоги
+        # Проверка наличия папок backup и archive
+        backup_path = os.path.join(repo_path, 'backup')
+        archive_path = os.path.join(repo_path, 'archive')
+
+        # Проверяем, что папки backup и archive существуют
+        if not os.path.exists(backup_path) and not os.path.exists(archive_path):
+            logger.warning(f"Skipping stanza ({repo_path}): Neither 'backup' nor 'archive' directories exist.")
+            return False
+
+        # Логирование процесса
+        dsmc_logger.info(f"Backing up contents of directories: {backup_path} and {archive_path}")
+
+        # Генерируем уникальное имя для лога для каждой итерации
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file_name = f"dsmc-{os.path.basename(repo_path)}-{timestamp}.log"
+        log_file_path = os.path.join(dsmc_log_dir, log_file_name)
+
+        # Экранируем путь к лог-файлу
+        log_file_path = f'"{log_file_path}"'
+
+        # Формируем команду для копирования содержимого только из backup и archive
+        command = f'{dsmc_path} incr "{backup_path}" "{archive_path}" -su=yes >> {log_file_path} 2>&1'
+
+        # Выполняем команду и логируем результат
         try:
             result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            dsmc_logger.info(f"Command dsmc executed successfully: {result.stdout.decode()}")
+            dsmc_logger.info(f"Backup completed for {repo_path} (backup and archive). Log saved to {log_file_path}")
+            return 0  # Успешное выполнение
         except subprocess.CalledProcessError as e:
-            dsmc_logger.error(f"Error executing command dsmc: {e.stderr.decode()}")
-            dsmc_logger.error(f"Failed command: {command}")
-            return False
+            error_message = f"Error during backup for {repo_path}. Check log file for details: {log_file_path}. Error: {e.stderr.decode()}"
+            dsmc_logger.error(error_message)
+            return 1  # Ошибка выполнения команды
 
         # Создаем lentochka-status
         end_time = datetime.datetime.now()

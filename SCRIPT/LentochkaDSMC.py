@@ -4,6 +4,7 @@
 # Подключаем необходимые библиотеки
 import os
 import sys
+import fcntl
 import signal
 import logging
 import subprocess
@@ -13,25 +14,6 @@ import shutil
 import psutil
 import datetime
 from pathlib import Path
-import fcntl
-
-# Получаем путь к логам и уровень логирования из конфигурации
-config = configparser.ConfigParser()
-config.read('config/config.ini')
-log_dir = os.path.join(os.path.dirname(__file__), 'logs')  # Директория для логов
-
-# Создаем директорию для логов, если она не существует
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-log_level = config.get('Logging', 'level', fallback='INFO').upper()
-
-# Настройка логирования
-logging.basicConfig(
-    filename=os.path.join(log_dir, 'lentochka.log'),  # Путь к файлу логов
-    level=log_level,               # Уровень логирования
-    format='%(asctime)s - %(levelname)s - %(message)s'  # Формат сообщений
-)
 
 # Глобальная инициализация логгера
 logger = logging.getLogger()
@@ -52,25 +34,25 @@ class MonitoringHandler:
     def send_metric(self, metric_name, value, status='OK'):
         """Отправка метрики в систему мониторинга."""
         if not self.enabled or not self.script:
-            logger.warning("Мониторинг отключен или не задан скрипт мониторинга.")
+            logger.warning("Monitoring is disabled or monitoring script is not set.")
             return
             
         try:
             cmd = [self.script, metric_name, str(value), status]
             subprocess.run(cmd, check=True, capture_output=True, text=True)
-            logger.info(f"Отправка метрики: {metric_name} со значением: {value} и статусом: {status}")
+            logger.info(f"Metric sent: {metric_name} with value: {value} and status: {status}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Ошибка отправки метрики в мониторинг: {e}")
+            logger.error(f"Error sending metric to monitoring: {e}")
     
     def cleanup_logs(self, log_dir, log_retention_days):
         """
         Очистка старых логов.
         """
         if not self.log_cleanup_enabled:
-            logging.info("Автоматическая очистка логов отключена.")
+            logging.info("Automatic log cleanup is disabled.")
             return 0
         if not os.path.isdir(log_dir):
-            logger.warning(f"Директория для логов не существует: {log_dir}")
+            logger.warning(f"Log directory does not exist: {log_dir}")
             return 0
         deleted_files_count = 0
         for log_file in os.listdir(log_dir):
@@ -82,10 +64,10 @@ class MonitoringHandler:
                         os.remove(log_file_path)
                         deleted_files_count += 1
                     except Exception as e:
-                        logger.error(f"Ошибка при удалении файла {log_file_path}: {e}")
+                        logger.error(f"Error removing file {log_file_path}: {e}")
         if deleted_files_count > 0:
-            logger.info(f"Удалено {deleted_files_count} старых логов.")
-            logger.info(f"Успешно удалены старые логи.")
+            logger.info(f"Deleted {deleted_files_count} old logs.")
+            logger.info(f"Successfully deleted old logs.")
         return deleted_files_count
 
 class ProcessLocker:
@@ -106,27 +88,27 @@ class ProcessLocker:
             except OSError:
                 return None
         except (IOError, ValueError) as e:
-            logger.error(f"Ошибка при чтении PID из файла {self.lock_file_path}: {e}")
+            logger.error(f"Error reading PID from file {self.lock_file_path}: {e}")
             return None
     
     def terminate_existing_process(self):
         pid = self._find_existing_process()
         if pid is not None:
-            logger.warning(f"Найден активный процесс с PID {pid}. Завершаю.")
+            logger.warning(f"Found active process with PID {pid}. Terminating.")
             try:
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(3)
                 try:
                     os.kill(pid, signal.SIGKILL)
-                    logger.warning(f"Процесс {pid} не завершился, принудительное завершение.")
+                    logger.warning(f"Process {pid} did not terminate, forcing termination.")
                 except ProcessLookupError:
-                    logger.info(f"Процесс {pid} уже завершен.")
+                    logger.info(f"Process {pid} already terminated.")
                 if os.path.exists(self.lock_file_path):
                     os.unlink(self.lock_file_path)
             except Exception as e:
-                logger.error(f"Ошибка при завершении процесса {pid}: {e}")
+                logger.error(f"Error terminating process {pid}: {e}")
         else:
-            logger.info("Нет активных процессов для завершения.")
+            logger.info("No active processes to terminate.")
     
     def __enter__(self):
         self.terminate_existing_process()
@@ -145,14 +127,14 @@ class ProcessLocker:
             if os.path.exists(self.lock_file_path):
                 os.unlink(self.lock_file_path)
         except Exception as e:
-            logger.error(f"Ошибка при освобождении ресурсов: {e}")
+            logger.error(f"Error releasing resources: {e}")
 
 def validate_and_prepare_log_dir(log_dir):
     """
     Проверяет и подготавливает директорию для логов.
     """
     if not log_dir or log_dir.strip() == '':
-        error_msg = "ОШИБКА: НЕ ЗАДАНА ДИРЕКТОРИЯ ДЛЯ ЛОГОВ В КОНФИГУРАЦИОННОМ ФАЙЛЕ!"
+        error_msg = "ERROR: LOG DIRECTORY NOT SET IN CONFIGURATION FILE!"
         logger.error(error_msg)
         monitoring.send_metric("log_dir_error", 1, "ERROR")
         raise ValueError(error_msg)
@@ -160,9 +142,9 @@ def validate_and_prepare_log_dir(log_dir):
     log_dir = os.path.join(project_root, log_dir.strip())
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)
-        logger.info(f"Создана директория для логов: {log_dir}")
+        logger.info(f"Created log directory: {log_dir}")
     elif not os.access(log_dir, os.W_OK):
-        raise PermissionError(f"Нет прав на запись в директорию: {log_dir}")
+        raise PermissionError(f"No write access to directory: {log_dir}")
     return log_dir
 
 def initialize_config():
@@ -172,11 +154,11 @@ def initialize_config():
         dict: Словарь с параметрами конфигурации
     """
     global CONFIG_FILE
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    logger.info(f"Путь к проекту: {project_root}")  # Логирование пути к проекту
-    CONFIG_FILE = os.path.join(project_root, "config/config.ini")
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '.'))
+    logger.info(f"Project path: {project_root}")  # Логирование пути к проекту
+    CONFIG_FILE = os.path.join(project_root, "LentochkaDSMC.ini")
     if not os.path.exists(CONFIG_FILE):
-        error_msg = f"Файл конфигурации не найден! Ищем по пути: {CONFIG_FILE}"
+        error_msg = f"Configuration file not found! Looking for path: {CONFIG_FILE}"
         raise FileNotFoundError(error_msg)
 
     # Загружаем конфиг
@@ -185,7 +167,7 @@ def initialize_config():
     
     # Проверка на наличие файла
     if not os.path.exists(CONFIG_FILE):
-        raise FileNotFoundError(f'Конфигурационный файл не найден: {CONFIG_FILE}')  
+        raise FileNotFoundError(f'Configuration file not found: {CONFIG_FILE}')  
     
     # Устанавливаем дефолтные значения
     config.setdefault('Paths', {})
@@ -225,13 +207,13 @@ def initialize_config():
     
     log_dir_value = config.get('Paths', 'log_dir')
     if not log_dir_value:
-        raise ValueError("Путь для log_dir не задан в конфигурации.")
+        raise ValueError("Log directory path not set in configuration.")
     log_dir = log_dir_value  # оставляем как строку
     if not os.path.exists(log_dir):
         os.makedirs(log_dir, exist_ok=True)  # Создание директории, если ее нет
     if not os.access(log_dir, os.W_OK):
-        logger.error(f"Нет прав на запись в директорию: {log_dir}")
-        raise PermissionError(f"Нет прав на запись в директорию: {log_dir}")
+        logger.error(f"No write access to directory: {log_dir}")
+        raise PermissionError(f"No write access to directory: {log_dir}")
     config['Paths']['log_dir'] = log_dir  # оставляем как строку
     
     return config
@@ -259,10 +241,10 @@ def find_stanzas(config):
                         else:
                             status = 'not completed'
 
-                        logger.info(f"Найден rsync.status файл по следующему пути: {status_path}")
-                        logger.info(f"Статус rsync файла: {status}")
+                        logger.info(f"Found rsync.status file at the following path: {status_path}")
+                        logger.info(f"Status of rsync file: {status}")
                 except IOError as e:
-                    logger.error(f"Ошибка при чтении файла {status_path}: {e}")
+                    logger.error(f"Error reading file {status_path}: {e}")
                     continue
 
                 # Добавляем станзу в список
@@ -275,40 +257,39 @@ def find_stanzas(config):
     return stanzas
 
 def process_stanza(stanza_info, config, monitoring):
-    """
-    Запись одной станзы на ленту.
-    """
-    start_time = datetime.datetime.now()
-    metric_sent = False
-    
-    # Проверяем наличие файла lentochka-status
-    status_dir = os.path.dirname(stanza_info['status_path'])
-    lentochka_status_path = os.path.join(status_dir, 'lentochka-status')
-    if os.path.exists(lentochka_status_path):
-        logger.info(f"Станза уже обработана, пропускаем.")
-        return True
+    dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
+    try:
+        # Установка времени начала
+        start_time = datetime.datetime.now()
+
+        # Проверяем наличие файла lentochka-status
+        status_dir = os.path.dirname(stanza_info['status_path'])
+        lentochka_status_path = os.path.join(status_dir, 'lentochka-status')
+        if os.path.exists(lentochka_status_path):
+            logger.info(f"Stanza ({stanza_info['repo_path']}) already processed, skipping.")
+            return True
 
         # Проверяем содержимое rsync.status
         with open(stanza_info['status_path'], 'r') as f:
             rsync_status = f.read().strip().lower()
         if not rsync_status.startswith("complete"):
-            logger.warning(f"Пропущена станза ({stanza_info['repo_path']}): статус rsync не начинается с 'complete' (найдено: '{rsync_status}').")
+            logger.warning(f"Skipping stanza ({stanza_info['repo_path']}): rsync status does not start with 'complete' (found: '{rsync_status}').")
             return False
 
         # Обрабатываем только саму директорию .repo
         repo_path = stanza_info['repo_path']
         if not os.path.exists(repo_path):
-            logger.error(f"Пропущена станза ({repo_path}): директория не существует.")
+            logger.error(f"Skipping stanza ({repo_path}): directory does not exist.")
             return False
 
-        dsmc_logger.info(f"Начато резервное копирование содержимого директории: {repo_path}")
+        dsmc_logger.info(f"Backing up contents of directory: {repo_path}")
         command = f'{dsmc_path} incr "{repo_path}" -su=yes'  # Копируем всю директорию и её подкаталоги
         try:
             result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            dsmc_logger.info(f"Команда dsmc выполнена успешно: {result.stdout.decode()}")
+            dsmc_logger.info(f"Command dsmc executed successfully: {result.stdout.decode()}")
         except subprocess.CalledProcessError as e:
-            dsmc_logger.error(f"Ошибка при выполнении команды dsmc: {e.stderr.decode()}")
-            dsmc_logger.error(f"Команда, которая не удалась: {command}")
+            dsmc_logger.error(f"Error executing command dsmc: {e.stderr.decode()}")
+            dsmc_logger.error(f"Failed command: {command}")
             return False
 
         # Создаем lentochka-status
@@ -317,11 +298,11 @@ def process_stanza(stanza_info, config, monitoring):
         with open(lentochka_status_path, 'w') as f:
             f.write(status_content)
 
-        dsmc_logger.info(f"Завершена обработка станзы {stanza_info['repo_path']} - статус: {stanza_info['status']}, файл lentochka-status создан.")
+        dsmc_logger.info(f"Finished processing stanza {stanza_info['repo_path']} - status: {stanza_info['status']}, file lentochka-status created.")
         return True
 
     except Exception as e:
-        logger.error(f"Необработанная ошибка в процессе обработки станзы: {e}")
+        logger.error(f"Uncaught error processing stanza: {e}")
         return False
 
 def generate_dsmc_log_path(log_dir):
@@ -338,11 +319,11 @@ def log_error_with_metrics(message, error):
         if monitoring:
             monitoring.send_metric("error", 1, "ERROR")
     except Exception as e:
-        logger.error(f"Ошибка при отправке метрик: {e}")
+        logger.error(f"Error sending metrics: {e}")
 
 def check_write_access(directory):
     if not os.access(directory, os.W_OK):
-        logger.error(f"Нет прав на запись в директорию: {directory}")
+        logger.error(f"No write access to directory: {directory}")
         return False
     return True
 
@@ -364,7 +345,7 @@ def cleanup_empty_logs(log_dir):
             log_path = os.path.join(log_dir, log_file)
             if os.path.getsize(log_path) == 0:
                 os.remove(log_path)
-                print(f'Удален пустой лог-файл: {log_path}')  
+                print(f'Deleted empty log file: {log_path}')  
 
 def sanitize_metric_name(name):
     """
@@ -382,7 +363,7 @@ def main():
 
     # Проверка существования скрипта мониторинга
     if not os.path.exists(monitoring.script):
-        logger.error(f"Скрипт мониторинга не найден по пути: {monitoring.script}")
+        logger.error(f"Monitoring script not found at path: {monitoring.script}")
         sys.exit(1)
 
     # Инициализация логгера DSMC
@@ -395,14 +376,14 @@ def main():
     dsmc_file_handler = logging.FileHandler(dsmc_log_file_path, mode='a')
     dsmc_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
     dsmc_logger.addHandler(dsmc_file_handler)
-    dsmc_logger.info(f"Инициализация логгера DSMC. Логи будут записаны в файл: {dsmc_log_file_path}")
+    dsmc_logger.info(f"Initializing DSMC logger. Logs will be written to file: {dsmc_log_file_path}")
 
     # Настройка логгера
     log_level = getattr(logging, config.get('Logging', 'level', fallback='INFO').upper(), logging.INFO)
     log_format = config.get('Logging', 'message_format', fallback='%%(asctime)s - %%(levelname)s - %%(message)s')
     time_format = config.get('Logging', 'time_format', fallback='%Y-%m-%d %H:%M:%S')
     log_file_path = os.path.join(config.get('Paths', 'log_dir'), f'lentochka-log-{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-    logger.info(f"Путь к логам: {log_file_path}")
+    logger.info(f"Log file path: {log_file_path}")
 
     logging.basicConfig(
         level=log_level,
@@ -433,24 +414,23 @@ def main():
         else:
             skipped_copies += 1
 
-    logger.info(f"Итоги: Найдено rsync.status файлов: {len(stanzas)}, успешно скопировано: {successful_copies}, пропущено: {skipped_copies}, ошибок: {failed_copies}")
+    logger.info(f"Results: Found {len(stanzas)} rsync.status files, successfully copied: {successful_copies}, skipped: {skipped_copies}, errors: {failed_copies}")
 
     for stanza in stanzas:
         rsync_status_path = os.path.join(stanza['repo_path'], 'rsync.status')
 
         # Логирование наличия rsync.status файла
         if os.path.exists(rsync_status_path):
-            # Логика обработки
             if os.path.exists(os.path.join(stanza['repo_path'], 'lentochka-status')):
-                logger.info(f"Станза уже обработана, пропускаем.")
+                logger.info(f"Stanza ({stanza['repo_path']}) already processed, skipping.")
             else:
-                logger.info(f"Обработка станзы: {stanza['repo_path']}...")
+                logger.info(f"Processing stanza: {stanza['repo_path']}...")
                 if process_stanza(stanza, config, monitoring):
                     successful_copies += 1
                 else:
                     failed_copies += 1
         else:
-            logger.info(f"Не найден rsync.status файл по пути: {rsync_status_path}")
+            logger.info(f"No rsync.status file found at path: {rsync_status_path}")
 
     # Завершение работы логгера DSMC
     for handler in dsmc_logger.handlers[:]:
@@ -458,9 +438,7 @@ def main():
         dsmc_logger.removeHandler(handler)
 
 if __name__ == '__main__':
-    config = initialize_config()
-    monitoring = MonitoringHandler(config)
-    stanzas = find_stanzas(config)
-
-    for stanza in stanzas:
-        process_stanza(stanza, config, monitoring)
+    try:
+        main()
+    except Exception as e:
+        print(f'Error: {e}')

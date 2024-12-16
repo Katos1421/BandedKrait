@@ -51,6 +51,9 @@ class MonitoringHandler:
         if not self.log_cleanup_enabled:
             logging.info("Автоматическая очистка логов отключена.")
             return 0
+        if not os.path.isdir(log_dir):
+            logger.warning(f"Директория для логов не существует: {log_dir}")
+            return 0
         deleted_files_count = 0
         for log_file in os.listdir(log_dir):
             log_file_path = os.path.join(log_dir, log_file)
@@ -109,7 +112,10 @@ class ProcessLocker:
     
     def __enter__(self):
         self.terminate_existing_process()
-        self.pid_file = open(self.lock_file_path, 'w')
+        lock_file = self.lock_file_path
+        if os.path.exists(lock_file):
+            os.remove(lock_file)
+        self.pid_file = open(lock_file, 'w')
         self.pid_file.write(str(os.getpid()))
         self.pid_file.flush()
         return self
@@ -251,6 +257,7 @@ def find_stanzas(config):
     return stanzas
 
 def process_stanza(stanza_info, config, monitoring):
+    dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
     try:
         # Установка времени начала
         start_time = datetime.datetime.now()
@@ -276,12 +283,13 @@ def process_stanza(stanza_info, config, monitoring):
             return False
 
         dsmc_logger.info(f"Начато резервное копирование содержимого директории: {repo_path}")
-        command = f'{dsmc_path} incr "{repo_path}/*" -su=yes'  # Копируем содержимое репы
+        command = f'{dsmc_path} incr "{repo_path}" -su=yes'  # Копируем всю директорию и её подкаталоги
         try:
             result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             dsmc_logger.info(f"Команда dsmc выполнена успешно: {result.stdout.decode()}")
         except subprocess.CalledProcessError as e:
             dsmc_logger.error(f"Ошибка при выполнении команды dsmc: {e.stderr.decode()}")
+            dsmc_logger.error(f"Команда, которая не удалась: {command}")
             return False
 
         # Создаем lentochka-status
@@ -290,7 +298,7 @@ def process_stanza(stanza_info, config, monitoring):
         with open(lentochka_status_path, 'w') as f:
             f.write(status_content)
 
-        dsmc_logger.info(f"Завершена обработка станзы ({repo_path}).")
+        dsmc_logger.info(f"Завершена обработка станзы {stanza_info['repo_path']} - статус: {stanza_info['status']}, файл lentochka-status создан.")
         return True
 
     except Exception as e:
@@ -358,6 +366,18 @@ def main():
         logger.error(f"Скрипт мониторинга не найден по пути: {monitoring.script}")
         sys.exit(1)
 
+    # Инициализация логгера DSMC
+    dsmc_log_file_path = os.path.join(
+        config.get('Paths', 'log_dir'),
+        f'dsmc-log-{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+    )
+    dsmc_logger = logging.getLogger('dsmc')
+    dsmc_logger.setLevel(logging.INFO)
+    dsmc_file_handler = logging.FileHandler(dsmc_log_file_path, mode='a')
+    dsmc_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    dsmc_logger.addHandler(dsmc_file_handler)
+    dsmc_logger.info(f"Инициализация логгера DSMC. Логи будут записаны в файл: {dsmc_log_file_path}")
+
     # Настройка логгера
     log_level = getattr(logging, config.get('Logging', 'level', fallback='INFO').upper(), logging.INFO)
     log_format = config.get('Logging', 'message_format', fallback='%%(asctime)s - %%(levelname)s - %%(message)s')
@@ -378,18 +398,6 @@ def main():
     console_handler.setLevel(log_level)
     console_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
     logger.addHandler(console_handler)
-
-    # Инициализация логгера DSMC
-    dsmc_log_file_path = os.path.join(
-        config.get('Paths', 'log_dir'),
-        f'dsmc-log-{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    )
-    dsmc_logger = logging.getLogger('dsmc')
-    dsmc_logger.setLevel(log_level)
-    dsmc_file_handler = logging.FileHandler(dsmc_log_file_path, mode='a')
-    dsmc_file_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
-    dsmc_logger.addHandler(dsmc_file_handler)
-    dsmc_logger.info(f"Инициализация логгера DSMC. Логи будут записаны в файл: {dsmc_log_file_path}")
 
     # Логика обработки станз
     stanzas = find_stanzas(config)

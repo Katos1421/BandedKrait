@@ -1,85 +1,367 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Подключаем необходимые библиотеки
 import os
 import sys
-import fcntl
 import signal
 import logging
 import subprocess
 import configparser
 import time
-import shutil
 import psutil
 import datetime
-from pathlib import Path
 
-# Глобальная инициализация логгера
-logger = logging.getLogger()
-dsmc_logger = None
+class DsmcPlusLentochkaLogs:
+    """
+    Класс для управления логированием в приложении.
+    Включает глобальный логгер и отдельный логгер для DSMC.
+    """
+
+    def __init__(self, lentochka_log_dir, dsmc_log_dir):
+        """
+        Инициализация класса с указанием директорий для логов.
+
+        :param lentochka_log_dir: Директория для глобального логгера (lentochka.log).
+        :param dsmc_log_dir: Директория для логгера DSMC.
+        """
+        self.lentochka_log_dir = self.resolve_relative_path(lentochka_log_dir)
+        self.dsmc_log_dir = self.resolve_relative_path(dsmc_log_dir)
+
+        self.logger = logging.getLogger()
+        self.dsmc_logger = logging.getLogger('dsmc')
+
+        self.global_lentochka_log_file = os.path.join(self.lentochka_log_dir, 'global-lentochka.log')
+        self.global_dsmc_log_file = os.path.join(self.dsmc_log_dir, 'global-dsmc.log')
+
+        self.logger.info(f"Абсолютный путь к lentochka_log_dir: {self.lentochka_log_dir}")
+        self.logger.info(f"Абсолютный путь к dsmc_log_dir: {self.dsmc_log_dir}")
+
+        self._setup_lentochka_logger()
+        self._setup_dsmc_logger()
+
+    @staticmethod
+    def resolve_relative_path(path):
+        """
+        Преобразует относительный путь в абсолютный относительно корня проекта.
+        Если путь уже абсолютный, возвращает его без изменений.
+
+        :param path: Путь к директории или файлу.
+        :return: Абсолютный путь.
+        """
+        if os.path.isabs(path):
+            return path
+        project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+        return os.path.abspath(os.path.join(project_root, path))
+
+    def _setup_lentochka_logger(self):
+        """
+        Настройка глобального логгера для приложения (lentochka).
+        """
+        # Очистка обработчиков
+        if self.logger.hasHandlers():
+            self.logger.handlers.clear()
+
+        # Проверка и создание директории логов
+        if not os.path.exists(self.lentochka_log_dir):
+            os.makedirs(self.lentochka_log_dir, exist_ok=True)
+
+        # Настройка логгера для глобального лога
+        log_file_path = os.path.join(self.lentochka_log_dir, 'lentochka_global_log_file.log')
+        log_format = '%(asctime)s - %(levelname)s - %(message)s'
+        time_format = '%Y-%m-%d %H:%M:%S'
+
+        # Создаем обработчик для глобального лога
+        file_handler = logging.FileHandler(log_file_path)
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
+        self.logger.addHandler(file_handler)
+
+        # Создаем обработчик для логов с таймштампом
+        timestamp_log_file_path = os.path.join(self.lentochka_log_dir,
+                                               f'lentochka_log_{datetime.datetime.now().strftime("%Y-%m-%d")}.log')
+        timestamp_file_handler = logging.FileHandler(timestamp_log_file_path)
+        timestamp_file_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
+        self.logger.addHandler(timestamp_file_handler)
+
+        # Добавление обработчика для консоли
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.DEBUG)
+        console_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
+        self.logger.addHandler(console_handler)
+
+        self.logger.info(f"Глобальный логгер настроен. Логи пишутся в файл: {log_file_path}")
+
+    def _setup_dsmc_logger(self):
+        """
+        Настройка логгера для DSMC.
+        """
+        # Очистка обработчиков
+        if self.dsmc_logger.hasHandlers():
+            self.dsmc_logger.handlers.clear()
+
+        # Проверка директории логов
+        self.validate_dsmc_log_dir()
+
+        # Настройка логгера DSMC (глобальный лог)
+        log_file_path = os.path.join(self.dsmc_log_dir, 'dsmc_global_log_file.log')
+        log_format = '%(asctime)s - %(levelname)s - %(message)s'
+        time_format = '%Y-%m-%d %H:%M:%S'
+
+        # Создаем обработчик для глобального лога DSMC
+        file_handler = logging.FileHandler(log_file_path, mode='a')
+        file_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
+        self.dsmc_logger.addHandler(file_handler)
+
+        # Создаем обработчик для лога DSMC с таймштампом
+        timestamp_log_file_path = os.path.join(self.dsmc_log_dir,
+                                               f'dsmc_log_{datetime.datetime.now().strftime("%Y-%m-%d")}.log')
+        timestamp_file_handler = logging.FileHandler(timestamp_log_file_path)
+        timestamp_file_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
+        self.dsmc_logger.addHandler(timestamp_file_handler)
+
+        # Устанавливаем уровень логирования
+        self.dsmc_logger.setLevel(logging.INFO)
+
+        self.dsmc_logger.info(f"DSMC логгер настроен. Логи пишутся в файл: {log_file_path}")
+
+    def log_lentochka_info(self, message):
+        """
+        Записывает сообщение уровня INFO в глобальный логгер.
+
+        :param message: Текст сообщения.
+        """
+        self.logger.info(message)
+
+    def log_lentochka_error(self, message):
+        """
+        Записывает сообщение уровня ERROR в глобальный логгер.
+
+        :param message: Текст сообщения.
+        """
+        self.logger.error(message)
+
+    def log_dsmc_info(self, message):
+        """
+        Записывает сообщение уровня INFO в DSMC логгер.
+
+        :param message: Текст сообщения.
+        """
+        self.dsmc_logger.info(message)
+
+    def log_dsmc_error(self, message):
+        """
+        Записывает сообщение уровня ERROR в DSMC логгер.
+
+        :param message: Текст сообщения.
+        """
+        self.dsmc_logger.error(message)
+
+    def cleanup_logs(self, retention_days):
+        """
+        Удаляет логи старше указанного количества дней в обоих лог-директориях.
+
+        :param retention_days: Количество дней для хранения логов.
+        """
+        self._cleanup_directory(self.lentochka_log_dir, retention_days, "lentochka")
+        self._cleanup_directory(self.dsmc_log_dir, retention_days, "dsmc")
+
+    def _cleanup_directory(self, directory, retention_days, log_type):
+        """
+        Вспомогательный метод для очистки логов в указанной директории.
+
+        :param directory: Директория для очистки.
+        :param retention_days: Количество дней для хранения логов.
+        :param log_type: Тип логов (для логирования процесса очистки).
+        """
+        if not os.path.exists(directory):
+            self.logger.warning(f"{log_type.capitalize()} лог директория не существует: {directory}")
+            return
+
+        deleted_files_count = 0
+        now = datetime.datetime.now()
+
+        for log_file in os.listdir(directory):
+            log_file_path = os.path.join(directory, log_file)
+            if os.path.isfile(log_file_path):
+                file_age_days = (now - datetime.datetime.fromtimestamp(os.path.getmtime(log_file_path))).days
+                if file_age_days > retention_days:
+                    try:
+                        os.remove(log_file_path)
+                        deleted_files_count += 1
+                    except Exception as ex:
+                        self.logger.error(f"Ошибка при удалении файла {log_file_path}: {ex}")
+
+        self.logger.info(f"Удалено {deleted_files_count} старых {log_type} логов из директории {directory}.")
+
+    def validate_log_directory(self, directory):
+        """
+        Проверяет существование и доступность директории для логов.
+        Если директория отсутствует, создаёт её.
+
+        :param directory: Директория для проверки.
+        """
+        if not os.path.exists(directory):
+            try:
+                os.makedirs(directory, exist_ok=True)
+                self.logger.info(f"Директория для логов создана: {directory}")
+            except PermissionError:
+                self.logger.error(f"Ошибка: нет прав на создание директории {directory}.")
+                raise
+
+        if not os.access(directory, os.W_OK):
+            self.logger.error(f"Ошибка: нет прав на запись в директорию {directory}.")
+            raise PermissionError(f"Нет прав на запись в директорию {directory}.")
+
+        self.logger.info(f"Директория для логов доступна: {directory}")
+
+    def validate_dsmc_log_dir(self):
+        """
+        Проверяет существование и доступность директории DSMC логов.
+        Если директория отсутствует, создаёт её.
+        """
+        self.validate_log_directory(self.dsmc_log_dir)
+
+    def generate_dsmc_log_file(self, repo_path):
+        """
+        Генерирует уникальный путь для DSMC лог-файла.
+
+        :param repo_path: Путь к репозиторию.
+        :return: Путь к лог-файлу.
+        """
+        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file_name = f"dsmc-{os.path.basename(repo_path)}-{timestamp}.log"
+        return os.path.join(self.dsmc_log_dir, log_file_name)
+
+    def run_dsmc_command(self, dsmc_path, backup_path, archive_path, repo_path):
+        """
+        Выполняет DSMC команду для указанных директорий backup и archive с перенаправлением вывода в лог.
+
+        :param dsmc_path: Путь к исполняемому файлу DSMC.
+        :param backup_path: Путь к директории backup.
+        :param archive_path: Путь к директории archive.
+        :param repo_path: Путь к репозиторию (для генерации имени лог-файла).
+        :return: Код выполнения команды (0 - успех, 1 - ошибка).
+        """
+        # Инициализируем переменную command пустым значением
+        command = ""
+
+        try:
+            # Генерируем путь к лог-файлу
+            log_file_path = self.generate_dsmc_log_file(repo_path)
+
+            # Формируем команду DSMC с перенаправлением вывода в лог
+            command = f'{dsmc_path} incr "{backup_path}" "{archive_path}" -su=yes >> "{log_file_path}" 2>&1'
+
+            # Выполняем команду
+            result = subprocess.run(command, shell=True, check=True)
+
+            # Логируем успешное выполнение
+            self.log_dsmc_info(f"Backup completed for {repo_path}. Log saved to {log_file_path}")
+            return 0
+
+        except subprocess.CalledProcessError as e:
+            # Логируем ошибку
+            self.log_dsmc_error(
+                f"Error during DSMC command execution. Command: {command}. Error: {e.stderr.decode() if e.stderr else 'No stderr'}"
+            )
+            return 1
+
+        except Exception as exception2:
+            # Логируем любую другую ошибку
+            self.log_dsmc_error(f"Unexpected error during DSMC command execution for {repo_path}: {exception2}")
+            return 1
+
+
+def initialize_config():
+    """
+    Ищет и загружает конфигурационный файл.
+    Returns:
+        configparser.ConfigParser: Объект конфигурации.
+    """
+    global CONFIG_FILE
+    CONFIG_FILE = '/home/dan/PycharmProjects/Lentochnik/LentochkaDSMC.ini'
+
+    if not os.path.exists(CONFIG_FILE):
+        error_msg = f"Конфигурационный файл не найден: {CONFIG_FILE}"
+        raise FileNotFoundError(error_msg)
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+
+    return config
+
+# Загрузка конфигурации
+config = initialize_config()
+
+# Инициализация глобального лог-менеджера с использованием конфигурационного файла
+log_manager = DsmcPlusLentochkaLogs(
+    lentochka_log_dir=config.get('Paths', 'lentochka_log_dir', fallback='./logs/lentochka'),
+    dsmc_log_dir=config.get('DSMC', 'dsmc_log_dir', fallback='./logs/dsmc')
+)
 
 class MonitoringHandler:
     """Класс для работы с системой мониторинга."""
+
     def __init__(self, config):
         self.enabled = config.getboolean('Monitoring', 'enabled', fallback=False)
         self.script = config.get('Monitoring', 'monitoring_script', fallback=None)
         self.interval = config.getint('Monitoring', 'interval', fallback=300)
-        
+
         # Параметры логирования
         self.log_dir = config.get('Paths', 'log_dir')
         self.log_retention_days = config.getint('Logging', 'log_retention_days', fallback=90)
         self.log_cleanup_enabled = config.getboolean('Logging', 'log_cleanup_enabled', fallback=True)
-        
+
         # Добавляем логирование директории поиска
         search_root = config.get('Paths', 'search_root')
-        logger.info(f"Search directory specified in .ini file: {search_root}")
-        
+        log_manager.log_lentochka_info(f"Search directory specified in .ini file: {search_root}")
+
     def send_metric(self, metric_name, value, status='OK'):
         """Отправка метрики в систему мониторинга."""
         if not self.enabled or not self.script:
-            logger.warning("Monitoring is disabled or monitoring script is not set.")
+            log_manager.logger.warning("Monitoring is disabled or monitoring script is not set.")
             return
-            
+
         try:
             cmd = [self.script, metric_name, str(value), status]
             subprocess.run(cmd, check=True, capture_output=True, text=True)
-            logger.info(f"Metric sent: {metric_name} with value: {value} and status: {status}")
+            log_manager.logger.info(f"Metric sent: {metric_name} with value: {value} and status: {status}")
         except subprocess.CalledProcessError as e:
-            logger.error(f"Error sending metric to monitoring: {e}")
-    
+            log_manager.logger.error(f"Error sending metric to monitoring: {e}")
+
     def cleanup_logs(self, log_dir, log_retention_days):
         """
         Очистка старых логов.
         """
         if not self.log_cleanup_enabled:
-            logging.info("Automatic log cleanup is disabled.")
+            log_manager.logger.info("Automatic log cleanup is disabled.")
             return 0
         if not os.path.isdir(log_dir):
-            logger.warning(f"Log directory does not exist: {log_dir}")
+            log_manager.logger.warning(f"Log directory does not exist: {log_dir}")
             return 0
         deleted_files_count = 0
         for log_file in os.listdir(log_dir):
             log_file_path = os.path.join(log_dir, log_file)
             if os.path.isfile(log_file_path):
-                file_age_days = (datetime.datetime.now() - datetime.datetime.fromtimestamp(os.path.getmtime(log_file_path))).days
+                file_age_days = (datetime.datetime.now() - datetime.datetime.fromtimestamp(
+                    os.path.getmtime(log_file_path))).days
                 if file_age_days > log_retention_days:
                     try:
                         os.remove(log_file_path)
                         deleted_files_count += 1
-                    except Exception as e:
-                        logger.error(f"Error removing file {log_file_path}: {e}")
+                    except Exception as exception3:
+                        log_manager.logger.error(f"Error removing file {log_file_path}: {e}")
         if deleted_files_count > 0:
-            logger.info(f"Deleted {deleted_files_count} old logs.")
-            logger.info(f"Successfully deleted old logs.")
+            log_manager.logger.info(f"Deleted {deleted_files_count} old logs.")
         return deleted_files_count
+
 
 class ProcessLocker:
     """Класс для контроля и завершения предыдущих процессов."""
+
     def __init__(self, lock_file_path):
         self.lock_file_path = lock_file_path
         self.pid_file = None
-    
+
     def _find_existing_process(self):
         try:
             if not os.path.exists(self.lock_file_path):
@@ -92,28 +374,28 @@ class ProcessLocker:
             except OSError:
                 return None
         except (IOError, ValueError) as e:
-            logger.error(f"Error reading PID from file {self.lock_file_path}: {e}")
+            log_manager.logger.error(f"Error reading PID from file {self.lock_file_path}: {e}")
             return None
-    
+
     def terminate_existing_process(self):
         pid = self._find_existing_process()
         if pid is not None:
-            logger.warning(f"Found active process with PID {pid}. Terminating.")
+            log_manager.logger.warning(f"Found active process with PID {pid}. Terminating.")
             try:
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(3)
                 try:
                     os.kill(pid, signal.SIGKILL)
-                    logger.warning(f"Process {pid} did not terminate, forcing termination.")
+                    log_manager.logger.warning(f"Process {pid} did not terminate, forcing termination.")
                 except ProcessLookupError:
-                    logger.info(f"Process {pid} already terminated.")
+                    log_manager.logger.info(f"Process {pid} already terminated.")
                 if os.path.exists(self.lock_file_path):
                     os.unlink(self.lock_file_path)
-            except Exception as e:
-                logger.error(f"Error terminating process {pid}: {e}")
+            except Exception as exception4:
+                log_manager.logger.error(f"Error terminating process {pid}: {e}")
         else:
-            logger.info("No active processes to terminate.")
-    
+            log_manager.logger.info("No active processes to terminate.")
+
     def __enter__(self):
         self.terminate_existing_process()
         lock_file = self.lock_file_path
@@ -123,7 +405,7 @@ class ProcessLocker:
         self.pid_file.write(str(os.getpid()))
         self.pid_file.flush()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             if self.pid_file:
@@ -131,163 +413,69 @@ class ProcessLocker:
             if os.path.exists(self.lock_file_path):
                 os.unlink(self.lock_file_path)
         except Exception as e:
-            logger.error(f"Error releasing resources: {e}")
+            log_manager.logger.error(f"Error releasing resources: {e}")
 
-class FileProcessingStats:
-    def __init__(self):
-        self.completed = 0
-        self.failed = 0
-        self.skipped = 0
-        self.in_progress = 0
-        self.not_found = 0
-        self.completed_copies = 0  # Успешные копирования
-        self.failed_copies = 0     # Неуспешные копирования
-
-    def update(self, status, is_copy=False):
-        if status == 'completed':
-            self.completed += 1
-        elif status == 'failed':
-            self.failed += 1
-        elif status == 'skipped':
-            self.skipped += 1
-        elif status == 'in_progress':
-            self.in_progress += 1
-        elif status == 'not_found':
-            self.not_found += 1
-        
-        # Для копирований
-        if is_copy:
-            if status == 'completed':
-                self.completed_copies += 1
-            elif status == 'failed':
-                self.failed_copies += 1
-
-    def log_results(self):
-        logger.info(f"Results: Completed files: {self.completed} \
-                    Failed files: {self.failed} \
-                    Skipped files: {self.skipped} \
-                    In progress files: {self.in_progress} \
-                    Not found files: {self.not_found}")
-        # Логирование итогов копирования
-        logger.info(f"Copying results: Successful copies: {self.completed_copies} \
-                    Failed copies: {self.failed_copies}")
 
 def validate_and_prepare_log_dir(log_dir):
     """
     Проверяет и подготавливает директорию для логов.
     """
     if not log_dir or log_dir.strip() == '':
-        error_msg = "ERROR: LOG DIRECTORY NOT SET IN CONFIGURATION FILE!"
-        logger.error(error_msg)
+        error_msg = "ОШИБКА: НЕ ЗАДАНА ДИРЕКТОРИЯ ДЛЯ ЛОГОВ В КОНФИГУРАЦИОННОМ ФАЙЛЕ!"
+        log_manager.logger.error(error_msg)
         monitoring.send_metric("log_dir_error", 1, "ERROR")
         raise ValueError(error_msg)
+
+    # Получаем абсолютный путь
     project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
     log_dir = os.path.join(project_root, log_dir.strip())
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir, exist_ok=True)
-        logger.info(f"Created log directory: {log_dir}")
-    elif not os.access(log_dir, os.W_OK):
-        raise PermissionError(f"No write access to directory: {log_dir}")
+
+        # Проверяем доступность на запись
+    log_manager.validate_dsmc_log_dir()
+
+    # Удаляем старые обработчики
+    if log_manager.logger.hasHandlers():
+        log_manager.logger.handlers.clear()
+
+    # Настраиваем логгер
+    log_format = '%(asctime)s - %(levelname)s - %(message)s'
+    time_format = '%Y-%m-%d %H:%M:%S'
+    log_file_path = os.path.join(log_dir, 'lentochka.log')
+
+    # Добавление обработчика для вывода в консоль
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
+    log_manager.logger.addHandler(console_handler)
+
+    log_manager.logger.info(f"Логирование настроено в файл: {log_file_path}")
+
     return log_dir
-
-def validate_and_prepare_dsmc_log_dir(dsmc_log_dir):
-    """
-    Проверка и подготовка директории для логов DSMC.
-    """
-    if not dsmc_log_dir or dsmc_log_dir.strip() == '':
-        error_msg = "ERROR: DSMC LOG DIRECTORY NOT SET IN CONFIGURATION FILE!"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-    
-    project_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-    dsmc_log_dir = os.path.join(project_root, dsmc_log_dir.strip())
-    
-    if not os.path.exists(dsmc_log_dir):
-        try:
-            os.makedirs(dsmc_log_dir, exist_ok=True)
-            logger.info(f"Created DSMC log directory: {dsmc_log_dir}")
-        except Exception as e:
-            logger.error(f"Failed to create DSMC log directory {dsmc_log_dir}: {e}")
-            raise PermissionError(f"Failed to create DSMC log directory: {dsmc_log_dir}")
-    
-    elif not os.access(dsmc_log_dir, os.W_OK):
-        error_msg = f"ERROR: No write access to DSMC log directory: {dsmc_log_dir}"
-        logger.error(error_msg)
-        raise PermissionError(error_msg)
-
-    return dsmc_log_dir
 
 def initialize_config():
     """
     Ищет и загружает конфигурационный файл.
     Returns:
-        dict: Словарь с параметрами конфигурации
+        configparser.ConfigParser: Объект конфигурации.
     """
     global CONFIG_FILE
-    # Считываем путь к директории с конфигурационным файлом из ini
-    config_dir = '.'  # Параметр из конфигурации
-    config_path = 'LentochkaDSMC.ini'  # Имя файла конфигурации
-    CONFIG_FILE = os.path.join(config_dir, config_path)  # Строим полный путь
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    log_manager.logger.info(f"Путь к проекту: {project_root}")  # Логирование пути к проекту
 
-    logger.info(f"Configuration file path: {CONFIG_FILE}")
+    # Путь к файлу конфигурации
+    CONFIG_FILE = '/home/dan/PycharmProjects/Lentochnik/LentochkaDSMC.ini'
+
     if not os.path.exists(CONFIG_FILE):
-        error_msg = f"Configuration file not found! Looking for path: {CONFIG_FILE}"
+        error_msg = f"Конфигурационный файл не найден: {CONFIG_FILE}"
+        log_manager.logger.error(error_msg)
         raise FileNotFoundError(error_msg)
 
-    # Загружаем конфиг
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
-    
-    # Устанавливаем дефолтные значения
-    config.setdefault('Paths', {})
-    config.setdefault('DSMC', {})
-    config.setdefault('Logging', {})
-    config.setdefault('Monitoring', {})
-    
-    # Пути
-    config['Paths']['log_dir'] = config.get('Paths', 'log_dir')
-    config['Paths']['search_root'] = config.get('Paths', 'search_root', fallback='')
-    config['Paths']['excluded_dirs'] = config.get('Paths', 'excluded_dirs', 
-                                                fallback='/proc,/sys,/dev,/run,/tmp,/var/cache,/var/tmp')
-    
-    # Настройки DSMC
-    config['DSMC']['dsmc_path'] = config.get('DSMC', 'dsmc_path', fallback='dsmc')
-    config['DSMC']['additional_params'] = config.get('DSMC', 'additional_params', fallback='-quiet')
-    config['DSMC']['max_backup_copies'] = config.get('DSMC', 'max_backup_copies', fallback='5')
-    config['DSMC']['dsmc_log_dir'] = config.get('DSMC', 'dsmc_log_dir', fallback=None)
-    
-    # Настройки логирования
-    config['Logging']['level'] = config.get('Logging', 'level', fallback='INFO')
-    config['Logging']['message_format'] = config.get('Logging', 'message_format', 
-                                                    fallback='%%(asctime)s - %%(levelname)s - %%(message)s',
-                                                    raw=True)
-    config['Logging']['time_format'] = config.get('Logging', 'time_format', 
-                                                fallback='%Y-%m-%d %H:%M:%S',
-                                                raw=True)
-    config['Logging']['log_retention_days'] = config.get('Logging', 'log_retention_days', fallback='90')
-    config['Logging']['log_cleanup_enabled'] = config.get('Logging', 'log_cleanup_enabled', fallback='true')
-    
-    # Мониторинг
-    config['Monitoring']['enabled'] = config.get('Monitoring', 'enabled', fallback='true')
-    config['Monitoring']['zabbix_server'] = config.get('Monitoring', 'zabbix_server', fallback='127.0.0.1')
-    config['Monitoring']['monitoring_script'] = config.get('Monitoring', 'monitoring_script', 
-        fallback='/path/to/monitoring/script.sh')
-    config['Monitoring']['interval'] = config.get('Monitoring', 'interval', fallback='300')
-    
-    log_dir_value = config.get('Paths', 'log_dir')
-    if not log_dir_value:
-        raise ValueError("Log directory path not set in configuration.")
-    log_dir = log_dir_value  # оставляем как строку
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir, exist_ok=True)  # Создание директории, если ее нет
-    if not os.access(log_dir, os.W_OK):
-        logger.error(f"No write access to directory: {log_dir}")
-        raise PermissionError(f"No write access to directory: {log_dir}")
-    config['Paths']['log_dir'] = log_dir  # оставляем как строку
-    
+
     return config
 
-def find_stanzas(config, stats):
+def find_stanzas(config):
     """
     Ищет все станзы для обработки.
     """
@@ -310,16 +498,10 @@ def find_stanzas(config, stats):
                         else:
                             status = 'not completed'
 
-                        logger.info(f"Found rsync.status file at the following path: {status_path}")
-                        logger.info(f"Status of rsync file: {status}")
-                        
-                        # Обновляем статистику
-                        stats.update(status)
-                        logger.info(f"File {status_path} processed with status: {status}.")
-
-                except IOError as e:
-                    logger.error(f"Error reading file {status_path}: {e}")
-                    stats.update('failed')
+                        log_manager.logger.info(f"Found rsync.status file at the following path: {status_path}")
+                        log_manager.logger.info(f"Status of rsync file: {status}")
+                except IOError as exception:
+                    log_manager.logger.error(f"Error reading file {status_path}: {exception}")
                     continue
 
                 # Добавляем станзу в список
@@ -331,24 +513,11 @@ def find_stanzas(config, stats):
 
     return stanzas
 
-def process_stanza(stanza_info, config, monitoring, stats):
-    dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
-    dsmc_log_dir = config.get('DSMC', 'dsmc_log_dir', fallback=None)
-
-    # Проверка, если путь к логам DSMC не задан
-    if not dsmc_log_dir:
-        error_msg = "DSMC log directory is not specified in the config file."
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-
-    # Подготовка директории логов DSMC
+def process_stanza(stanza_info, config, monitoring):
     try:
-        dsmc_log_dir = validate_and_prepare_dsmc_log_dir(dsmc_log_dir)
-    except Exception as e:
-        logger.error(f"Error validating DSMC log directory: {e}")
-        raise
+        # Проверяем директорию для логов DSMC
+        log_manager.validate_dsmc_log_dir()
 
-    try:
         # Установка времени начала
         start_time = datetime.datetime.now()
 
@@ -356,22 +525,22 @@ def process_stanza(stanza_info, config, monitoring, stats):
         status_dir = os.path.dirname(stanza_info['status_path'])
         lentochka_status_path = os.path.join(status_dir, 'lentochka-status')
         if os.path.exists(lentochka_status_path):
-            logger.info(f"Stanza ({stanza_info['repo_path']}) already processed, skipping.")
-            stats.update('skipped')  # Обновляем счетчик пропущенных
+            log_manager.log_lentochka_info(f"Stanza ({stanza_info['repo_path']}) already processed, skipping.")
             return True
 
         # Проверяем содержимое rsync.status
         with open(stanza_info['status_path'], 'r') as f:
             rsync_status = f.read().strip().lower()
         if not rsync_status.startswith("complete"):
-            stats.update('skipped')  # Обновляем счетчик пропущенных
+            log_manager.log_lentochka_info(
+                f"Skipping stanza ({stanza_info['repo_path']}): rsync status does not start with 'complete' (found: '{rsync_status}')."
+            )
             return False
 
         # Обрабатываем только саму директорию .repo
         repo_path = stanza_info['repo_path']
         if not os.path.exists(repo_path):
-            logger.error(f"Skipping stanza ({repo_path}): directory does not exist.")
-            stats.update('failed')
+            log_manager.log_lentochka_error(f"Skipping stanza ({repo_path}): directory does not exist.")
             return False
 
         # Проверка наличия папок backup и archive
@@ -380,83 +549,44 @@ def process_stanza(stanza_info, config, monitoring, stats):
 
         # Проверяем, что папки backup и archive существуют
         if not os.path.exists(backup_path) and not os.path.exists(archive_path):
-            logger.warning(f"Skipping stanza ({repo_path}): Neither 'backup' nor 'archive' directories exist.")
-            stats.update('failed')
+            log_manager.log_lentochka_info(
+                f"Skipping stanza ({repo_path}): Neither 'backup' nor 'archive' directories exist."
+            )
             return False
 
-        # Логирование процесса
-        dsmc_logger.info(f"Backing up contents of directories: {backup_path} and {archive_path}")
-
-        # Генерируем уникальное имя для лога для каждой итерации
-        timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_file_name = f"dsmc-{os.path.basename(repo_path)}-{timestamp}.log"
-        log_file_path = os.path.join(dsmc_log_dir, log_file_name)
-
-        # Формируем команду для копирования содержимого только из backup и archive
-        command = f'{dsmc_path} incr "{backup_path}" "{archive_path}" -su=yes >> "{log_file_path}" 2>&1'
-
-        # Записываем команду в lentochka-status с текущим временем
-        current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        with open(lentochka_status_path, 'a') as status_file:  
-            status_file.write(f"{current_time} - Running command: {command}\n")
-
-        # Выполняем команду и логируем результат
-        try:
-            result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            with open(lentochka_status_path, 'a') as status_file:
-                status_file.write(f"{current_time} - Command executed successfully (code 0)\n")
-            dsmc_logger.info(f"Backup completed for {repo_path} (backup and archive). Log saved to {log_file_path}")
-            stats.update('completed', is_copy=True)  # Успешное копирование
-            return 0  # Успешное выполнение
-        except subprocess.CalledProcessError as e:
-            current_time = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            error_message = f"Error during backup for {repo_path}. Check log file for details: {log_file_path}. Error: {e.stderr.decode()}"
-            with open(lentochka_status_path, 'a') as status_file:
-                status_file.write(f"{current_time} - Command failed (code 1): {error_message}\n")
-            dsmc_logger.error(f"Command failed with error code {e.returncode}: {error_message}")
-            stats.update('failed', is_copy=True)  # Неудачное копирование
-            return 1  # Ошибка выполнения команды
+        # Выполняем команду DSMC через класс
+        dsmc_path = config.get('DSMC', 'dsmc_path', fallback='dsmc')
+        result = log_manager.run_dsmc_command(dsmc_path, backup_path, archive_path, repo_path)
 
         # Создаем lentochka-status
-        end_time = datetime.datetime.now()
-        status_content = f"Backup written to tape\nStart: {start_time.isoformat()}\nEnd: {end_time.isoformat()}"
-        with open(lentochka_status_path, 'a') as f:
-            f.write(status_content)
+        if result == 0:  # Если команда выполнена успешно
+            end_time = datetime.datetime.now()
+            status_content = f"Backup written to tape\nStart: {start_time.isoformat()}\nEnd: {end_time.isoformat()}"
+            with open(lentochka_status_path, 'w') as f:
+                f.write(status_content)
 
-        dsmc_logger.info(f"Finished processing stanza {stanza_info['repo_path']} - status: {stanza_info['status']}, file lentochka-status created.")
-        return True
+            log_manager.log_dsmc_info(
+                f"Finished processing stanza {stanza_info['repo_path']} - status: {stanza_info['status']}, file lentochka-status created."
+            )
+            return True
+        else:
+            return False
 
-    except Exception as e:
-        logger.error(f"Uncaught error processing stanza: {e}")
-        stats.update('failed')  # Обновляем статистику на случай ошибки
+    except Exception as exception6:
+        log_manager.log_lentochka_error(f"Uncaught error processing stanza: {e}")
         return False
 
-    # Логируем итоговые результаты
-    stats.log_results()
-
-def generate_dsmc_log_path(log_dir):
-    """
-    Генерирует путь к логу DSMC с таймштампом.
-    """
-    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    log_file_name = f'lentochka_{timestamp}.log'
-    log_file_path = Path(log_dir) / log_file_name
-
-    # Экранируем путь к лог-файлу
-    return str(log_file_path)
-
 def log_error_with_metrics(message, error):
-    logger.error(f"{message}: {error}")
+    log_manager.log_lentochka_error(f"{message}: {error}")
     try:
         if monitoring:
             monitoring.send_metric("error", 1, "ERROR")
     except Exception as e:
-        logger.error(f"Error sending metrics: {e}")
+        log_manager.log_lentochka_error(f"Error sending metrics: {e}")
 
 def check_write_access(directory):
     if not os.access(directory, os.W_OK):
-        logger.error(f"No write access to directory: {directory}")
+        log_manager.logger.error(f"No write access to directory: {directory}")
         return False
     return True
 
@@ -490,79 +620,52 @@ def main():
     """
     Основная функция скрипта.
     """
-    global monitoring, dsmc_logger
-    config = initialize_config()  # Инициализация конфигурации
+    global monitoring
+    local_config = initialize_config()  # Инициализация конфигурации
     monitoring = MonitoringHandler(config)
 
     # Проверка существования скрипта мониторинга
-    if monitoring.enabled and monitoring.script and not os.path.exists(monitoring.script):
-        logger.error(f"Monitoring script not found at path: {monitoring.script}")
+    if not os.path.exists(monitoring.script):
+        log_manager.logger.error(f"Monitoring script not found at path: {monitoring.script}")
         sys.exit(1)
 
-    # Инициализация логгера DSMC
-    dsmc_log_file_path = os.path.join(
-        config.get('Paths', 'log_dir'),
-        f'dsmc-log-{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    )
-    dsmc_logger = logging.getLogger('dsmc')
-    dsmc_logger.setLevel(logging.INFO)
-    dsmc_file_handler = logging.FileHandler(dsmc_log_file_path, mode='a')
-    dsmc_file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
-    dsmc_logger.addHandler(dsmc_file_handler)
-    dsmc_logger.info(f"Initializing DSMC logger. Logs will be written to file: {dsmc_log_file_path}")
-
-    # Настройка логгера
-    log_level = getattr(logging, config.get('Logging', 'level', fallback='INFO').upper(), logging.INFO)
-    log_format = config.get('Logging', 'message_format', fallback='%%(asctime)s - %%(levelname)s - %%(message)s')
-    time_format = config.get('Logging', 'time_format', fallback='%Y-%m-%d %H:%M:%S')
-    log_file_path = os.path.join(config.get('Paths', 'log_dir'), f'lentochka-log-{datetime.datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
-    logger.info(f"Log file path: {log_file_path}")
-
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        datefmt=time_format,
-        filename=log_file_path,
-        filemode='a'
-    )
-
-    # Добавляем обработчик для консоли
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    console_handler.setFormatter(logging.Formatter(log_format, datefmt=time_format))
-    logger.addHandler(console_handler)
-
-    # Создаем объект для статистики
-    stats = FileProcessingStats()
+    # Логирование начала работы
+    log_manager.log_lentochka_info("Начало выполнения основного скрипта.")
 
     # Логика обработки станз
-    stanzas = find_stanzas(config, stats)
-    
+    stanzas = find_stanzas(config)
+    successful_copies = 0
+    failed_copies = 0
+    skipped_copies = 0
+
+    for stanza in stanzas:
+        if stanza['status'] == 'failed':
+            failed_copies += 1
+        elif stanza['status'] != 'not completed':
+            successful_copies += 1
+        else:
+            skipped_copies += 1
+
+    log_manager.logger.info(f"Results: Found {len(stanzas)} rsync.status files, successfully copied: {successful_copies}, skipped: {skipped_copies}, errors: {failed_copies}")
+
     for stanza in stanzas:
         rsync_status_path = os.path.join(stanza['repo_path'], 'rsync.status')
 
         # Логирование наличия rsync.status файла
         if os.path.exists(rsync_status_path):
             if os.path.exists(os.path.join(stanza['repo_path'], 'lentochka-status')):
-                logger.info(f"Stanza ({stanza['repo_path']}) already processed, skipping.")
-                stats.update('skipped')  # Обновляем счетчик пропущенных
+                log_manager.logger.info(f"Stanza ({stanza['repo_path']}) already processed, skipping.")
             else:
-                logger.info(f"Processing stanza: {stanza['repo_path']}...")
-                if process_stanza(stanza, config, monitoring, stats):
-                    stats.update('completed')
+                log_manager.logger.info(f"Processing stanza: {stanza['repo_path']}...")
+                if process_stanza(stanza, config, monitoring):
+                    successful_copies += 1
                 else:
-                    stats.update('failed')
+                    failed_copies += 1
         else:
-            logger.info(f"No rsync.status file found at path: {rsync_status_path}")
-            stats.update('not_found')
+            log_manager.logger.info(f"No rsync.status file found at path: {rsync_status_path}")
 
-    # Логируем итоговые результаты
-    stats.log_results()
-
-    # Завершение работы логгера DSMC
-    for handler in dsmc_logger.handlers[:]:
-        handler.close()
-        dsmc_logger.removeHandler(handler)
+    # Логирование завершения работы
+    log_manager.log_lentochka_info("Script has completed its job and now it's going home")
 
 if __name__ == '__main__':
     try:

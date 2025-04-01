@@ -443,12 +443,24 @@ class StanzaProcessor:
                     self.lentochka_log.log_lentochka_error(f"Backup directory not found: {backup_dir}")
                     continue
 
+                # Проверяем наличие lentochka-status файла
+                lentochka_status_path = repo_dir / 'lentochka-status'
+                if lentochka_status_path.exists():
+                    lentochka_status_count['total'] += 1
+                    lentochka_status_count['processed'] += 1
+                    self.lentochka_log.log_lentochka_info(f"Stanza already processed: {repo_dir}")
+                    continue
+
                 # Recursively find rsync.status files within .repo directory
                 rsync_status_files = list(repo_dir.rglob('rsync.status'))
 
+                if not rsync_status_files:
+                    self.lentochka_log.log_lentochka_info(f"No rsync.status file found for: {repo_dir}")
+                    lentochka_status_count['skipped'] += 1
+                    continue
+
                 for rsync_status_path in rsync_status_files:
                     rsync_status_count['total'] += 1
-                    lentochka_status_path = repo_dir / 'lentochka-status'
 
                     try:
                         with open(rsync_status_path, 'r') as f:
@@ -458,37 +470,27 @@ class StanzaProcessor:
                                 rsync_status_count['failed'] += 1
                                 self.lentochka_log.log_lentochka_info(
                                     f"Stanza marked as failed: {repo_dir}")
-                                continue
-
-                            lentochka_status_exists = lentochka_status_path.exists()
-
-                            # Total lentochka status files count
-                            if lentochka_status_exists:
-                                lentochka_status_count['total'] += 1
-
-                            if lentochka_status_exists:
-                                rsync_status_count['completed'] += 1
-                                lentochka_status_count['processed'] += 1
-                                self.lentochka_log.log_lentochka_info(f"Stanza already processed: {repo_dir}")
-                                continue
+                                continue  # Пропускаем станзы со статусом failed
 
                             if 'complete' in status_content:
                                 status = 'completed'
                                 rsync_status_count['completed'] += 1
+
+                                stanza = {
+                                    'status_path': str(rsync_status_path),
+                                    'repo_path': str(repo_dir),
+                                    'backup_path': str(repo_dir),
+                                    'status': status,
+                                    'subdirs': [d.name for d in backup_dir.iterdir() if d.is_dir()]
+                                }
+
+                                stanzas.append(stanza)
+                                self.lentochka_log.log_lentochka_info(f"Stanza added to processing queue: {repo_dir}")
                             else:
                                 status = 'not completed'
                                 rsync_status_count['missing'] += 1
-
-                            stanza = {
-                                'status_path': str(rsync_status_path),
-                                'repo_path': str(repo_dir),
-                                'backup_path': str(repo_dir),
-                                'status': status,
-                                'subdirs': [d.name for d in backup_dir.iterdir() if d.is_dir()]
-                            }
-
-                            stanzas.append(stanza)
-                            self.lentochka_log.log_lentochka_info(f"Stanza added to processing queue: {repo_dir}")
+                                self.lentochka_log.log_lentochka_info(
+                                    f"Stanza not marked as complete: {repo_dir}")
 
                     except IOError as exception:
                         self.lentochka_log.log_lentochka_error(
@@ -496,18 +498,20 @@ class StanzaProcessor:
 
         process_directory(search_root)
 
-        # Calculate skipped and error statuses for lentochka status
-        lentochka_status_count['skipped'] = repo_count - lentochka_status_count['processed']
-        lentochka_status_count['errors'] = 0  # You can modify this if you track errors during lentochka-status creation
+        # Вычисляем skipped для lentochka_status
+        lentochka_status_count['skipped'] = repo_count - lentochka_status_count['processed'] - lentochka_status_count[
+            'errors']
 
         result_message = (
             f"RESULTS: "
             f"Found {rsync_status_count['total']} rsync.status files, "
             f"successfully copied: {rsync_status_count['completed']}, "
-            f"skipped: {repo_count - rsync_status_count['completed']}, "
-            f"errors: {rsync_status_count['failed']}\n"
-            # Modify the lentochka status log to match the requirements
-            f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - RESULTS: Found {lentochka_status_count['total']} lentochka.status files"
+            f"failed: {rsync_status_count['failed']}, "
+            f"missing: {rsync_status_count['missing']}\n"
+            f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - INFO - RESULTS: Found {lentochka_status_count['total']} lentochka.status files, "
+            f"processed: {lentochka_status_count['processed']}, "
+            f"skipped: {lentochka_status_count['skipped']}, "
+            f"errors: {lentochka_status_count['errors']}"
         )
         self.lentochka_log.log_lentochka_info(result_message)
         return stanzas
@@ -534,6 +538,12 @@ class StanzaProcessor:
             if not repo_path.exists():
                 self.lentochka_log.log_lentochka_error(
                     f"Skipping stanza: Path does not exist: {repo_path}")
+                return False
+
+            # Проверим статус станзы - не должно быть 'failed'
+            if stanza_info.get('status') == 'failed':
+                self.lentochka_log.log_lentochka_info(
+                    f"Skipping stanza with failed status: {stanza_info['repo_path']}")
                 return False
 
             # Формируем команду DSMC
@@ -782,6 +792,14 @@ def main():
 
             # Обрабатываем каждую stanza
             for stanza in stanzas:
+                # Проверяем, что станза не имеет статус failed
+                if stanza.get('status') == 'failed':
+                    dsmc_log.log_manager.info(f"Skipping stanza with failed status: {stanza['repo_path']}")
+                    skipped_copies += 1
+                    if monitoring.enabled:
+                        monitoring.send_metric("skipped_stanzas", 1)
+                    continue
+
                 if os.path.exists(os.path.join(stanza['repo_path'], 'lentochka-status')):
                     dsmc_log.log_manager.info(f"Stanza ({stanza['repo_path']}) already processed, skipping.")
                     skipped_copies += 1

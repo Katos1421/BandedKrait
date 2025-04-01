@@ -689,6 +689,16 @@ def main():
             )
             dsmc_log.cleanup_empty_logs()
             dsmc_log.close_iteration_log()
+
+            if dsmc_log.lentochka_status_dir and os.path.exists(dsmc_log.lentochka_status_dir):
+                try:
+                    if not os.listdir(dsmc_log.lentochka_status_dir):
+                        os.rmdir(dsmc_log.lentochka_status_dir)
+                        dsmc_log.log_manager.info(
+                            f"Removed empty lentochka_status_dir: {dsmc_log.lentochka_status_dir}")
+                except Exception as e:
+                    dsmc_log.log_manager.error(f"Error removing empty lentochka_status_dir: {e}")
+
             if monitoring.log_cleanup_enabled:
                 log_dir = dsmc_log.config.get('Paths', 'log_dir')
                 if not log_dir:
